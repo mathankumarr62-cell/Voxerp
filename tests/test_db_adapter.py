@@ -1,0 +1,137 @@
+import sqlite3
+import unittest
+import warnings
+
+from db_adapter import (
+    build_schema_map,
+    get_attendance,
+    get_marks,
+    get_timetable,
+    initialize_database,
+    mark_attendance,
+)
+
+
+class DbAdapterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        initialize_database()
+
+    def test_attendance_not_found_for_unknown_student(self):
+        result = get_attendance("student-404", "dbms")
+        self.assertEqual(result["status"], "not_found")
+        self.assertIn("student", result["message"].lower())
+
+    def test_attendance_no_data_for_student_without_records(self):
+        result = get_attendance("student-6", "dbms")
+        self.assertEqual(result["status"], "no_data")
+        self.assertIn("no attendance", result["message"].lower())
+
+    def test_subject_name_is_normalized(self):
+        result = get_marks("student-1", "  DBMS  ")
+        self.assertEqual(result["status"], "ok")
+        self.assertGreaterEqual(len(result["rows"]), 1)
+
+    def test_connections_are_closed_without_resource_warnings(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            get_attendance("student-1", "dbms")
+            get_marks("student-1", "dbms")
+            get_timetable("student-1")
+            build_schema_map()
+
+        self.assertEqual([warning for warning in caught if warning.category is ResourceWarning], [])
+
+    def test_mark_attendance_is_idempotent_and_logs_once(self):
+        result = mark_attendance("student-1", "dbms", "2026-08-07", "present", "teacher-1")
+        self.assertEqual(result["status"], "created")
+
+        duplicate = mark_attendance("student-1", "dbms", "2026-08-07", "present", "teacher-1")
+        self.assertEqual(duplicate["status"], "unchanged")
+
+        conn = sqlite3.connect("voxerp.db")
+        try:
+            row_count = conn.execute(
+                "SELECT COUNT(*) FROM attendance WHERE student_id = ? AND attendance_date = ? AND lower(replace(subject, ' ', '')) = ?",
+                ("student-1", "2026-08-07", "dbms"),
+            ).fetchone()[0]
+            log_count = conn.execute(
+                "SELECT COUNT(*) FROM write_log WHERE actor = ? AND action = 'mark_attendance' AND target = ?",
+                ("teacher-1", "student-1"),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertEqual(row_count, 1)
+        self.assertEqual(log_count, 1)
+
+    def test_mark_attendance_updates_existing_status_without_duplicate_row(self):
+        mark_attendance("student-2", "DBMS", "2026-08-09", "present", "teacher-1")
+        updated = mark_attendance("student-2", "DBMS", "2026-08-09", "absent", "teacher-1")
+
+        self.assertEqual(updated["status"], "updated")
+
+        conn = sqlite3.connect("voxerp.db")
+        try:
+            rows = conn.execute(
+                "SELECT status FROM attendance WHERE student_id = ? AND attendance_date = ? AND lower(replace(subject, ' ', '')) = ?",
+                ("student-2", "2026-08-09", "dbms"),
+            ).fetchall()
+            log_count = conn.execute(
+                "SELECT COUNT(*) FROM write_log WHERE actor = ? AND target = ?",
+                ("teacher-1", "student-2"),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "absent")
+        self.assertGreaterEqual(log_count, 2)
+
+    def test_write_log_uses_actor_id_not_student_id(self):
+        mark_attendance("student-1", "DBMS", "2026-08-10", "present", "teacher-1")
+
+        conn = sqlite3.connect("voxerp.db")
+        try:
+            row = conn.execute(
+                "SELECT actor, target FROM write_log WHERE target = ? ORDER BY id DESC LIMIT 1",
+                ("student-1",),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(row[0], "teacher-1")
+        self.assertEqual(row[1], "student-1")
+
+    def test_write_log_records_subject_date_and_status(self):
+        mark_attendance("student-1", "DBMS", "2026-08-11", "absent", "teacher-1")
+
+        conn = sqlite3.connect("voxerp.db")
+        try:
+            row = conn.execute(
+                "SELECT subject, attendance_date, status FROM write_log WHERE target = ? AND action = 'mark_attendance' ORDER BY id DESC LIMIT 1",
+                ("student-1",),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(row[0], "DBMS")
+        self.assertEqual(row[1], "2026-08-11")
+        self.assertEqual(row[2], "absent")
+
+    def test_missing_required_field_raises_clear_error(self):
+        with self.assertRaises(ValueError):
+            mark_attendance("student-1", None, "2026-08-07", "present", "teacher-1")
+
+    def test_mark_attendance_requires_actor_id(self):
+        with self.assertRaises(ValueError):
+            mark_attendance("student-1", "dbms", "2026-08-07", "present", "")
+
+    def test_schema_map_contains_expected_tables(self):
+        schema_map = build_schema_map()
+        self.assertIn("students", schema_map["tables"])
+        self.assertIn("attendance", schema_map["tables"])
+
+
+if __name__ == "__main__":
+    unittest.main()
