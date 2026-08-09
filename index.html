@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>VoxERP</title>
+<style>
+body { font-family: sans-serif; max-width: 600px; margin: 60px auto; padding: 20px; background: #111; color: #eee; }
+h1 { font-size: 22px; }
+select { font-size: 16px; padding: 10px; border-radius: 8px; margin-bottom: 20px; width: 100%; }
+button { font-size: 16px; padding: 14px 24px; border-radius: 8px; border: none; cursor: pointer; margin-right: 10px; }
+#micBtn { background: #2563eb; color: white; }
+#micBtn.confirming { background: #d97706; }
+#micBtn:disabled { background: #444; cursor: not-allowed; }
+#status { margin-top: 20px; padding: 14px; background: #1e1e1e; border-radius: 8px; }
+#transcript { margin-top: 10px; font-size: 16px; color: #4ade80; }
+#reply { margin-top: 10px; font-size: 16px; color: #60a5fa; }
+#log { margin-top: 20px; font-size: 12px; color: #888; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>VoxERP — Voice ERP Assistant</h1>
+
+<label for="userSelect">Demo user:</label>
+<select id="userSelect">
+  <option value="">-- Select a user --</option>
+</select>
+
+<div>
+  <button id="micBtn">Start Listening</button>
+</div>
+
+<div id="status">Status: idle</div>
+<div id="transcript"></div>
+<div id="reply"></div>
+<div id="log"></div>
+
+<script>
+var userSelect = document.getElementById("userSelect");
+var micBtn = document.getElementById("micBtn");
+var statusEl = document.getElementById("status");
+var transcriptEl = document.getElementById("transcript");
+var replyEl = document.getElementById("reply");
+var logEl = document.getElementById("log");
+
+var isListening = false;
+var isSpeaking = false;
+var users = [];
+
+var pendingAction = null;
+var confirmAttempts = 0;
+
+function logMsg(msg) {
+  logEl.textContent = logEl.textContent + msg + String.fromCharCode(10);
+  console.log(msg);
+}
+
+function speak(text, onDone) {
+  var synth = window.speechSynthesis;
+  if (!synth) {
+    logMsg("ERROR: speechSynthesis not supported");
+    if (onDone) onDone();
+    return;
+  }
+  var utter = new SpeechSynthesisUtterance(text);
+  utter.onstart = function() {
+    isSpeaking = true;
+    statusEl.textContent = "Status: speaking";
+  };
+  utter.onend = function() {
+    isSpeaking = false;
+    statusEl.textContent = "Status: idle";
+    if (onDone) onDone();
+  };
+  synth.speak(utter);
+}
+
+fetch("/users")
+  .then(function(res) { return res.json(); })
+  .then(function(data) {
+    users = data.users || [];
+    users.forEach(function(u) {
+      var opt = document.createElement("option");
+      opt.value = u.id;
+      opt.dataset.role = u.role;
+      opt.textContent = u.name + " (" + u.role + ")";
+      userSelect.appendChild(opt);
+    });
+    logMsg("[users] loaded " + users.length + " demo users");
+  })
+  .catch(function(err) {
+    logMsg("[users] failed to load: " + err);
+    statusEl.textContent = "Status: could not load demo users, check backend is running";
+  });
+
+var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+var recognition = null;
+
+if (!SR) {
+  statusEl.textContent = "Status: Speech Recognition not supported. Use Chrome.";
+  micBtn.disabled = true;
+} else {
+  recognition = new SR();
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.lang = "en-US";
+
+  recognition.onstart = function() {
+    isListening = true;
+    micBtn.textContent = pendingAction ? "Listening for yes/no..." : "Listening...";
+    statusEl.textContent = "Status: listening";
+  };
+
+  recognition.onresult = function(event) {
+    var text = event.results[0][0].transcript;
+    transcriptEl.textContent = "You said: " + text;
+    logMsg("[STT] result: " + text);
+
+    if (pendingAction) {
+      handleConfirmationReply(text);
+    } else {
+      sendQuery(text);
+    }
+  };
+
+  recognition.onerror = function(event) {
+    logMsg("[STT] error: " + event.error);
+    if (event.error === "not-allowed") {
+      statusEl.textContent = "Status: Mic permission denied. Please allow mic access.";
+      pendingAction = null;
+    } else if (event.error === "no-speech") {
+      statusEl.textContent = "Status: idle";
+      if (pendingAction) {
+        handleConfirmationReply("");
+      } else {
+        speak("I did not catch that, try again.");
+      }
+    } else {
+      statusEl.textContent = "Status: idle";
+    }
+  };
+
+  recognition.onend = function() {
+    isListening = false;
+    micBtn.textContent = pendingAction ? "Listening for yes/no..." : "Start Listening";
+    micBtn.classList.toggle("confirming", !!pendingAction);
+    if (statusEl.textContent === "Status: listening") {
+      statusEl.textContent = "Status: idle";
+    }
+  };
+}
+
+micBtn.addEventListener("click", function() {
+  if (!recognition) return;
+
+  if (isSpeaking) {
+    logMsg("[mic] blocked - still speaking");
+    return;
+  }
+
+  if (!pendingAction) {
+    var selectedId = userSelect.value;
+    if (!selectedId) {
+      statusEl.textContent = "Status: please select a demo user first";
+      return;
+    }
+  }
+
+  if (isListening) {
+    recognition.stop();
+  } else {
+    recognition.start();
+  }
+});
+
+function sendQuery(text) {
+  var selectedId = userSelect.value;
+  var selectedOption = userSelect.options[userSelect.selectedIndex];
+  var role = selectedOption ? selectedOption.dataset.role : null;
+
+  if (!selectedId) {
+    statusEl.textContent = "Status: please select a demo user first";
+    return;
+  }
+
+  statusEl.textContent = "Status: thinking...";
+
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function() { controller.abort(); }, 10000);
+
+  fetch("/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: text, user_id: selectedId, role: role }),
+    signal: controller.signal
+  })
+    .then(function(res) {
+      clearTimeout(timeoutId);
+      return res.json();
+    })
+    .then(function(data) {
+      var reply = data.reply_text || "No response.";
+      replyEl.textContent = "VoxERP: " + reply;
+      logMsg("[backend] reply: " + reply);
+      statusEl.textContent = "Status: idle";
+
+      if (data.requires_confirmation && data.pending) {
+        pendingAction = data.pending;
+        confirmAttempts = 0;
+        speak(reply, function() {
+          if (recognition && !isListening) {
+            recognition.start();
+          }
+        });
+      } else {
+        speak(reply);
+      }
+    })
+    .catch(function(err) {
+      clearTimeout(timeoutId);
+      logMsg("[backend] error: " + err);
+      statusEl.textContent = "Status: idle";
+      speak("Something went wrong, please try again.");
+    });
+}
+
+function handleConfirmationReply(text) {
+  var normalized = text.trim().toLowerCase();
+  var words = normalized.split(/\s+/);
+  var noWords = ["no", "nope", "cancel", "don't", "dont"];
+  var yesWords = ["yes", "yeah", "yep", "confirm", "sure"];
+  var hasNo = words.some(function(w) { return noWords.indexOf(w) !== -1; });
+  var hasYes = words.some(function(w) { return yesWords.indexOf(w) !== -1; });
+  var isNo = hasNo;
+  var isYes = hasYes && !hasNo;
+
+  if (isYes) {
+    sendConfirm("yes");
+    return;
+  }
+  if (isNo) {
+    sendConfirm("no");
+    return;
+  }
+
+  confirmAttempts = confirmAttempts + 1;
+  logMsg("[confirm] unclear reply: '" + text + "' (attempt " + confirmAttempts + ")");
+
+  if (confirmAttempts >= 2) {
+    logMsg("[confirm] aborting after unclear reply");
+    pendingAction = null;
+    micBtn.classList.remove("confirming");
+    replyEl.textContent = "VoxERP: I didn't get a clear answer, so no changes were made.";
+    speak("I didn't get a clear answer, so no changes were made.");
+    return;
+  }
+
+  speak("Sorry, please say yes or no.", function() {
+    if (recognition && !isListening) {
+      recognition.start();
+    }
+  });
+}
+
+function sendConfirm(decision) {
+  var action = pendingAction;
+  pendingAction = null;
+  micBtn.classList.remove("confirming");
+  statusEl.textContent = "Status: saving...";
+
+  fetch("/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: decision, pending: action })
+  })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      var reply = data.reply_text || "Done.";
+      replyEl.textContent = "VoxERP: " + reply;
+      logMsg("[confirm] reply: " + reply);
+      statusEl.textContent = "Status: idle";
+      speak(reply);
+    })
+    .catch(function(err) {
+      logMsg("[confirm] error: " + err);
+      statusEl.textContent = "Status: idle";
+      speak("Something went wrong saving that, please try again.");
+    });
+}
+</script>
+</body>
+</html>
