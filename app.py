@@ -1,87 +1,14 @@
-import re
 import datetime
 from flask import Flask, request, jsonify, send_from_directory
 import db_adapter
+from intelligence.intent_engine import IntentEngine
+from intelligence.rbac import authorize_request
+from intelligence.response_generator import generate_response
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
 db_adapter.initialize_database()
-
-
-def _all_students():
-    conn = db_adapter._connect()
-    try:
-        rows = conn.execute("SELECT id, name FROM students").fetchall()
-        return [{"id": r["id"], "name": r["name"]} for r in rows]
-    finally:
-        conn.close()
-
-
-STUDENT_DIRECTORY = _all_students()
-
-
-def find_target_student(text_lower):
-    for s in STUDENT_DIRECTORY:
-        if s["name"].lower() in text_lower:
-            return s
-    return None
-
-
-def parse_intent(text, role):
-    text_lower = text.lower().strip()
-
-    if not text_lower:
-        return {"action": "unknown", "table": None, "filters": {}}
-
-    subjects = ["dbms", "operating systems", "os", "computer networks", "cn"]
-    found_subject = None
-    for s in subjects:
-        if s in text_lower:
-            found_subject = "Operating Systems" if s == "os" else (
-                "Computer Networks" if s == "cn" else s.upper() if s == "dbms" else s.title()
-            )
-            break
-
-    if "mark" in text_lower and "absent" in text_lower:
-        target = find_target_student(text_lower)
-        return {
-            "action": "write",
-            "table": "attendance",
-            "filters": {"subject": found_subject, "status": "absent", "target": target},
-        }
-
-    if "attendance" in text_lower:
-        return {"action": "read", "table": "attendance", "filters": {"subject": found_subject}}
-    if "marks" in text_lower or "score" in text_lower:
-        return {"action": "read", "table": "marks", "filters": {"subject": found_subject}}
-    if "timetable" in text_lower or "schedule" in text_lower:
-        return {"action": "read", "table": "timetable", "filters": {}}
-
-    return {"action": "unknown", "table": None, "filters": {}}
-
-
-def apply_rbac_read(user_id, role, filters):
-    filters = dict(filters or {})
-    filters["student_id"] = user_id
-    return filters
-
-
-def apply_rbac_write(user_id, role, filters):
-    filters = dict(filters or {})
-    target = filters.get("target")
-    if role == "teacher" and target:
-        filters["student_id"] = target["id"]
-        filters["target_name"] = target["name"]
-    else:
-        filters["student_id"] = user_id
-        filters["target_name"] = "you"
-    return filters
-
-
-def generate_response(result):
-    if not result:
-        return "Something went wrong, please try again."
-    return result.get("message", "I couldn't process that.")
+intent_engine = IntentEngine()
 
 
 @app.route("/")
@@ -114,56 +41,68 @@ def query():
         return jsonify({"reply_text": "I didn't catch that, try again."})
 
     try:
-        intent = parse_intent(text, role)
+        schema_map = db_adapter.build_schema_map()
+        intent = intent_engine.parse(text, role, schema_map)
 
-        if intent["action"] == "unknown":
-            return jsonify({"reply_text": "I couldn't find that. Try asking about attendance, marks, or timetable."})
+        auth_res = authorize_request(user_id=user_id, role=role, intent=intent, text=text)
+        if not auth_res.get("allowed"):
+            return jsonify({"reply_text": generate_response(auth_res)})
 
-        if intent["action"] == "write":
-            subject = intent["filters"].get("subject")
+        target_student_id = auth_res["target_student_id"]
+        action = intent.get("action")
+        table = intent.get("table")
+        filters = intent.get("filters") or {}
+
+        if action == "write":
+            if table != "attendance":
+                return jsonify({"reply_text": "I can't help with that request."})
+
+            subject = filters.get("subject")
             if not subject:
                 return jsonify({"reply_text": "Which subject should I mark absent?"})
 
-            rbac_filters = apply_rbac_write(user_id, role, intent["filters"])
-            target_name = rbac_filters["target_name"]
-            today = datetime.date.today().isoformat()
+            status = filters.get("status") or "absent"
+            date = filters.get("date") or datetime.date.today().isoformat()
+            student_name = filters.get("student_name")
+            target_display = student_name if student_name and student_name.lower() != "you" else "you"
 
             pending = {
-                "student_id": rbac_filters["student_id"],
+                "student_id": target_student_id,
                 "subject": subject,
-                "date": today,
-                "status": "absent",
+                "date": date,
+                "status": status,
                 "actor_id": user_id,
             }
 
-            confirm_text = "Mark " + target_name + " absent in " + subject + " for today. Say yes or no."
+            confirm_text = f"Mark {target_display} {status} in {subject} for today. Say yes or no."
             return jsonify({
                 "reply_text": confirm_text,
                 "requires_confirmation": True,
                 "pending": pending,
             })
 
-        filters = apply_rbac_read(user_id, role, intent["filters"])
+        if action == "read":
+            if table == "attendance":
+                subject = filters.get("subject")
+                if not subject:
+                    return jsonify({"reply_text": "Which subject would you like attendance for?"})
+                result = db_adapter.get_attendance(target_student_id, subject)
 
-        if intent["table"] == "attendance":
-            subject = filters.get("subject")
-            if not subject:
-                return jsonify({"reply_text": "Which subject would you like attendance for?"})
-            result = db_adapter.get_attendance(filters["student_id"], subject)
+            elif table == "marks":
+                subject = filters.get("subject")
+                if not subject:
+                    return jsonify({"reply_text": "Which subject would you like marks for?"})
+                result = db_adapter.get_marks(target_student_id, subject)
 
-        elif intent["table"] == "marks":
-            subject = filters.get("subject")
-            if not subject:
-                return jsonify({"reply_text": "Which subject would you like marks for?"})
-            result = db_adapter.get_marks(filters["student_id"], subject)
+            elif table == "timetable":
+                result = db_adapter.get_timetable(target_student_id)
 
-        elif intent["table"] == "timetable":
-            result = db_adapter.get_timetable(filters["student_id"])
+            else:
+                return jsonify({"reply_text": "I couldn't process that request."})
 
-        else:
-            return jsonify({"reply_text": "I couldn't process that request."})
+            return jsonify({"reply_text": generate_response(result)})
 
-        return jsonify({"reply_text": generate_response(result)})
+        return jsonify({"reply_text": "I couldn't process that request."})
 
     except Exception as e:
         print("ERROR in /query:", e)

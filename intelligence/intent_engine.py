@@ -1,6 +1,7 @@
+from __future__ import annotations
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from google import genai
 
@@ -66,6 +67,20 @@ class IntentEngine:
         self.client = client
         if self.client is None:
             api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                for env_path in [os.path.expanduser("~/.env"), os.path.join(os.path.dirname(__file__), "..", ".env")]:
+                    if os.path.isfile(env_path):
+                        try:
+                            with open(env_path, "r") as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if line.startswith("GEMINI_API_KEY="):
+                                        api_key = line.split("=", 1)[1].strip("'\" ")
+                                        break
+                        except Exception:
+                            pass
+                    if api_key:
+                        break
             if api_key:
                 try:
                     self.client = genai.Client(api_key=api_key)
