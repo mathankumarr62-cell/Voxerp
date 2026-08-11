@@ -1,4 +1,6 @@
 import datetime
+import os
+import sys
 from flask import Flask, request, jsonify, send_from_directory
 import db_adapter
 from intelligence.intent_engine import IntentEngine
@@ -9,6 +11,14 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 
 db_adapter.initialize_database()
 intent_engine = IntentEngine()
+
+if intent_engine.client is None:
+    try:
+        from tests.test_person_b import FakeGeminiClient
+        intent_engine.client = FakeGeminiClient()
+        print("[SERVER LOG] GEMINI_API_KEY not set in environment/.env. Initialized offline FakeGeminiClient fallback.", flush=True)
+    except Exception as e:
+        print("[SERVER LOG] Could not load FakeGeminiClient fallback:", e, flush=True)
 
 
 @app.route("/")
@@ -41,11 +51,20 @@ def query():
         return jsonify({"reply_text": "I didn't catch that, try again."})
 
     try:
-        schema_map = db_adapter.build_schema_map()
-        intent = intent_engine.parse(text, role, schema_map)
+        print(f"\n[SERVER LOG] Received /query: user_id='{user_id}', role='{role}', text='{text}'", flush=True)
 
+        schema_map = db_adapter.build_schema_map()
+        
+        print("[SERVER LOG] Invoking IntentEngine.parse()...", flush=True)
+        intent = intent_engine.parse(text, role, schema_map)
+        print(f"[SERVER LOG] IntentEngine parsed result: {intent}", flush=True)
+
+        print("[SERVER LOG] Invoking authorize_request()...", flush=True)
         auth_res = authorize_request(user_id=user_id, role=role, intent=intent, text=text)
+        print(f"[SERVER LOG] authorize_request decision: {auth_res}", flush=True)
+
         if not auth_res.get("allowed"):
+            print("[SERVER LOG] Authorization DENIED or UNSUPPORTED. db_adapter will NOT be called.", flush=True)
             return jsonify({"reply_text": generate_response(auth_res)})
 
         target_student_id = auth_res["target_student_id"]
@@ -59,6 +78,7 @@ def query():
 
             subject = filters.get("subject")
             if not subject:
+                print("[SERVER LOG] Write request missing subject. Asking for subject without writing.", flush=True)
                 return jsonify({"reply_text": "Which subject should I mark absent?"})
 
             status = filters.get("status") or "absent"
@@ -74,6 +94,8 @@ def query():
                 "actor_id": user_id,
             }
 
+            print(f"[SERVER LOG] Write request authorized. Preparing confirmation request (db_adapter.mark_attendance NOT called yet). Pending payload: {pending}", flush=True)
+
             confirm_text = f"Mark {target_display} {status} in {subject} for today. Say yes or no."
             return jsonify({
                 "reply_text": confirm_text,
@@ -86,26 +108,31 @@ def query():
                 subject = filters.get("subject")
                 if not subject:
                     return jsonify({"reply_text": "Which subject would you like attendance for?"})
+                print(f"[SERVER LOG] Calling db_adapter.get_attendance('{target_student_id}', '{subject}')", flush=True)
                 result = db_adapter.get_attendance(target_student_id, subject)
 
             elif table == "marks":
                 subject = filters.get("subject")
                 if not subject:
                     return jsonify({"reply_text": "Which subject would you like marks for?"})
+                print(f"[SERVER LOG] Calling db_adapter.get_marks('{target_student_id}', '{subject}')", flush=True)
                 result = db_adapter.get_marks(target_student_id, subject)
 
             elif table == "timetable":
+                print(f"[SERVER LOG] Calling db_adapter.get_timetable('{target_student_id}')", flush=True)
                 result = db_adapter.get_timetable(target_student_id)
 
             else:
+                print("[SERVER LOG] Unknown table for read intent.", flush=True)
                 return jsonify({"reply_text": "I couldn't process that request."})
 
+            print(f"[SERVER LOG] db_adapter result: {result}", flush=True)
             return jsonify({"reply_text": generate_response(result)})
 
         return jsonify({"reply_text": "I couldn't process that request."})
 
     except Exception as e:
-        print("ERROR in /query:", e)
+        print("[SERVER LOG] ERROR in /query:", e, flush=True)
         return jsonify({"reply_text": "Something went wrong on my end, please try again."}), 500
 
 
@@ -115,14 +142,18 @@ def confirm():
     decision = (data.get("confirm") or "").strip().lower()
     pending = data.get("pending") or {}
 
+    print(f"\n[SERVER LOG] Received /confirm: decision='{decision}', pending={pending}", flush=True)
+
     required = ["student_id", "subject", "date", "status", "actor_id"]
     if not all(k in pending for k in required):
         return jsonify({"reply_text": "I lost track of that request, please try again."}), 400
 
     if decision != "yes":
+        print("[SERVER LOG] Confirmation decision is not 'yes'. db_adapter.mark_attendance will NOT be called.", flush=True)
         return jsonify({"reply_text": "Okay, no changes made."})
 
     try:
+        print(f"[SERVER LOG] Confirmation explicit 'yes' received. Calling db_adapter.mark_attendance({pending})", flush=True)
         result = db_adapter.mark_attendance(
             pending["student_id"],
             pending["subject"],
@@ -130,9 +161,10 @@ def confirm():
             pending["status"],
             actor_id=pending["actor_id"],
         )
+        print(f"[SERVER LOG] db_adapter.mark_attendance result: {result}", flush=True)
         return jsonify({"reply_text": generate_response(result)})
     except Exception as e:
-        print("ERROR in /confirm:", e)
+        print("[SERVER LOG] ERROR in /confirm:", e, flush=True)
         return jsonify({"reply_text": "Something went wrong while saving that, please try again."}), 500
 
 

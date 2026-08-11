@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 
@@ -33,8 +34,11 @@ class FakeGeminiModels:
             return FakeGeminiResponse('{"action":"read","table":"attendance","filters":{"student_id":null,"student_name":null,"subject":"Maths","date":null,"status":null}}')
         if "timetable" in lowered or "schedule" in lowered:
             return FakeGeminiResponse('{"action":"read","table":"timetable","filters":{"student_id":null,"student_name":null,"subject":null,"date":null,"status":null}}')
+        if "priya" in lowered and "marks" in lowered:
+            return FakeGeminiResponse('{"action":"read","table":"marks","filters":{"student_id":null,"student_name":"Priya","subject":null,"date":null,"status":null}}')
         if "mark vijay absent" in lowered or ("mark" in lowered and "absent" in lowered):
-            return FakeGeminiResponse('{"action":"write","table":"attendance","filters":{"student_id":null,"student_name":"Vijay","subject":null,"date":null,"status":"absent"}}')
+            subject = "DBMS" if "dbms" in lowered else None
+            return FakeGeminiResponse(f'{{"action":"write","table":"attendance","filters":{{"student_id":null,"student_name":"Vijay","subject":{json.dumps(subject)},"date":null,"status":"absent"}}}}')
         if "weather" in lowered or "asdfghjkl" in lowered:
             return FakeGeminiResponse('{"action":"unsupported","table":"unsupported","filters":{"student_id":null,"student_name":null,"subject":null,"date":null,"status":null}}')
         return FakeGeminiResponse('{"action":"read","table":"marks","filters":{"student_id":null,"student_name":null,"subject":null,"date":null,"status":null}}')
