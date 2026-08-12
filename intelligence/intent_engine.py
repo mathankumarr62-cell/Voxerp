@@ -1,12 +1,15 @@
 from __future__ import annotations
+
 import json
 import os
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict
 
 from google import genai
 
 
 MODEL_NAME = "gemini-3.6-flash"
+
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -65,22 +68,36 @@ class IntentEngine:
 
     def __init__(self, client: genai.Client | None = None) -> None:
         self.client = client
+
         if self.client is None:
             api_key = os.getenv("GEMINI_API_KEY")
+
             if not api_key:
-                for env_path in [os.path.expanduser("~/.env"), os.path.join(os.path.dirname(__file__), "..", ".env")]:
-                    if os.path.isfile(env_path):
-                        try:
-                            with open(env_path, "r") as f:
-                                for line in f:
-                                    line = line.strip()
-                                    if line.startswith("GEMINI_API_KEY="):
-                                        api_key = line.split("=", 1)[1].strip("'\" ")
-                                        break
-                        except Exception:
-                            pass
+                env_paths = [
+                    os.path.expanduser("~/.env"),
+                    os.path.join(os.path.dirname(__file__), "..", ".env"),
+                ]
+
+                for env_path in env_paths:
+                    if not os.path.isfile(env_path):
+                        continue
+
+                    try:
+                        with open(env_path, "r", encoding="utf-8") as file:
+                            for line in file:
+                                line = line.strip()
+
+                                if line.startswith("GEMINI_API_KEY="):
+                                    api_key = line.split(
+                                        "=", 1
+                                    )[1].strip("'\" ")
+                                    break
+                    except Exception:
+                        pass
+
                     if api_key:
                         break
+
             if api_key:
                 try:
                     self.client = genai.Client(api_key=api_key)
@@ -101,11 +118,14 @@ class IntentEngine:
             return self._fallback_intent()
 
         normalized_role = role.strip().lower() if isinstance(role, str) else ""
+
         if normalized_role not in {"student", "teacher"}:
             return self._fallback_intent()
 
+        clean_text = text.strip()
+
         prompt = self._build_prompt(
-            text=text.strip(),
+            text=clean_text,
             role=normalized_role,
             schema_map=schema_map,
         )
@@ -134,7 +154,17 @@ class IntentEngine:
                 return self._fallback_intent()
 
             parsed = json.loads(response.text)
-            return self._validate_intent(parsed)
+
+            intent = self._validate_intent(parsed)
+
+            # Deterministic safety guard for explicit attendance writes.
+            #
+            # Gemini remains responsible for normal natural-language
+            # understanding, but an unmistakable command such as
+            # "Mark Vijay absent" must never randomly become unsupported.
+            intent = self._apply_write_safety_guard(clean_text, intent)
+
+            return intent
 
         except Exception:
             return self._fallback_intent()
@@ -175,7 +205,7 @@ Classification rules:
 1. "attendance" queries belong to the attendance table.
 2. "marks", "scores", "exam marks", or similar queries belong to the marks table.
 3. Timetable or class-schedule queries belong to the timetable table.
-4. A request to mark a student present/absent is a write operation on attendance.
+4. A request to mark a student present or absent is a WRITE operation on attendance.
 5. If the request is unrelated to VoxERP's supported operations, classify it as unsupported.
 6. Extract a student name only when the user explicitly mentions one.
 7. Extract a student ID only when the user explicitly provides one.
@@ -187,6 +217,7 @@ Classification rules:
 13. If the user says "my", "me", or "myself", do not treat that as a different student target; it is only a self-reference.
 14. If the request mentions a timetable, class schedule, or timetable-related phrase, classify it as the timetable table even if it also mentions the word "my".
 15. If the request is ambiguous, keep the relevant filters as null and do not guess a target student.
+16. Any explicit request containing an attendance write action such as "mark", "record", or "set" together with "present" or "absent" must be classified as a write operation on attendance.
 """.strip()
 
     @staticmethod
@@ -231,6 +262,114 @@ Classification rules:
             "action": action,
             "table": table,
             "filters": cleaned_filters,
+        }
+
+    @staticmethod
+    def _apply_write_safety_guard(
+        text: str,
+        intent: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Deterministically recognize unmistakable attendance-write commands.
+
+        Gemini remains the primary intent engine. This guard only overrides
+        the model when the user's wording itself clearly indicates an
+        attendance write.
+        """
+
+        normalized = text.lower().strip()
+
+        write_verbs = (
+            "mark",
+            "record",
+            "set",
+            "update",
+        )
+
+        attendance_statuses = {
+            "absent": "absent",
+            "present": "present",
+        }
+
+        has_write_verb = any(
+            re.search(rf"\b{re.escape(verb)}\b", normalized)
+            for verb in write_verbs
+        )
+
+        detected_status = None
+
+        for word, status in attendance_statuses.items():
+            if re.search(rf"\b{word}\b", normalized):
+                detected_status = status
+                break
+
+        if not has_write_verb or detected_status is None:
+            return intent
+
+        # Only attendance writes are covered by this deterministic guard.
+        guarded_filters = dict(intent.get("filters", {}))
+
+        guarded_filters["status"] = detected_status
+
+        # If Gemini failed to extract the student name, recover an explicitly
+        # mentioned name from common commands such as:
+        #   Mark Vijay absent
+        #   Record Vijay present
+        #   Mark Vijay absent in DBMS
+        if not guarded_filters.get("student_name"):
+            name_match = re.search(
+                r"\b(?:mark|record|set|update)"
+                r"(?:\s+attendance)?"
+                r"\s+"
+                r"([A-Za-z][A-Za-z0-9_-]*)"
+                r"\s+(?:as\s+)?(?:present|absent)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            if name_match:
+                candidate = name_match.group(1)
+
+                if candidate.lower() not in {
+                    "me",
+                    "myself",
+                    "my",
+                    "attendance",
+                }:
+                    guarded_filters["student_name"] = candidate
+
+        # Recover a subject only when it is explicitly introduced by "in".
+        # Example:
+        #   Mark Vijay absent in DBMS
+        #
+        # We deliberately do not guess subjects from arbitrary words.
+        if not guarded_filters.get("subject"):
+            subject_match = re.search(
+                r"\bin\s+([A-Za-z][A-Za-z0-9&._-]*)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            if subject_match:
+                candidate_subject = subject_match.group(1)
+
+                if candidate_subject.lower() not in {
+                    "the",
+                    "class",
+                    "attendance",
+                }:
+                    guarded_filters["subject"] = candidate_subject
+
+        return {
+            "action": "write",
+            "table": "attendance",
+            "filters": {
+                "student_id": guarded_filters.get("student_id"),
+                "student_name": guarded_filters.get("student_name"),
+                "subject": guarded_filters.get("subject"),
+                "date": guarded_filters.get("date"),
+                "status": detected_status,
+            },
         }
 
     @staticmethod
