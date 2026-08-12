@@ -124,6 +124,11 @@ class IntentEngine:
 
         clean_text = text.strip()
 
+        # Offline deterministic mode for presentations and demos.
+        offline_flag = os.getenv("VOXERP_OFFLINE_MODE")
+        if isinstance(offline_flag, str) and offline_flag.strip().lower() in {"1", "true", "yes"}:
+            return self._offline_intent(clean_text, normalized_role, schema_map)
+
         prompt = self._build_prompt(
             text=clean_text,
             role=normalized_role,
@@ -371,6 +376,132 @@ Classification rules:
                 "status": detected_status,
             },
         }
+
+    @staticmethod
+    def _offline_intent(text: str, role: str, schema_map: Dict[str, Any]) -> Dict[str, Any]:
+        """Deterministic, presentation-friendly intent parser used when
+        VOXERP_OFFLINE_MODE is enabled. Produces the same intent contract
+        as the Gemini path but using simple heuristics.
+        """
+
+        lowered = (text or "").strip()
+        lowered_l = lowered.lower()
+
+        # Short-circuit obvious unsupported requests.
+        if any(token in lowered_l for token in ("weather", "asdfghjkl")):
+            return IntentEngine._fallback_intent()
+
+        # Detect explicit write commands first using the safety guard.
+        write_verbs = ("mark", "record", "set", "update")
+        if any(re.search(rf"\b{re.escape(v)}\b", lowered_l) for v in write_verbs) and any(
+            w in lowered_l for w in ("absent", "present")
+        ):
+            # Use existing deterministic guard to extract name/subject/status.
+            return IntentEngine._apply_write_safety_guard(text, {"action": "write", "table": "attendance", "filters": {}})
+
+        # Timetable
+        if "timetable" in lowered_l or "schedule" in lowered_l or "class schedule" in lowered_l:
+            return IntentEngine._validate_intent({"action": "read", "table": "timetable", "filters": {"student_id": None, "student_name": None, "subject": None, "date": None, "status": None}})
+
+        # Marks detection
+        if "marks" in lowered_l or ("mark" in lowered_l and "absent" not in lowered_l):
+            # Try to extract subject
+            subject = None
+            m = re.search(r"\bin\s+([A-Za-z][A-Za-z0-9&._\- ]*)\b", text)
+            if m:
+                subject = m.group(1).strip()
+            else:
+                for candidate in ("DBMS", "AI", "Maths", "Operating Systems", "Computer Networks"):
+                    if candidate.lower() in lowered_l:
+                        subject = candidate
+                        break
+
+            # Try to extract explicit student name (e.g., "Priya's marks")
+            student_name = IntentEngine._offline_extract_student_name(text)
+            if student_name is None:
+                # e.g. "Show me Priya's marks" or "Priya marks"
+                m2 = re.search(r"show me ([A-Z][a-z]+)", text)
+                if m2:
+                    student_name = m2.group(1)
+
+            return IntentEngine._validate_intent({
+                "action": "read",
+                "table": "marks",
+                "filters": {
+                    "student_id": None,
+                    "student_name": student_name,
+                    "subject": subject,
+                    "date": None,
+                    "status": None,
+                },
+            })
+
+        # Attendance detection
+        if "attendance" in lowered_l or "how much attendance" in lowered_l:
+            subject = None
+            m = re.search(r"\b(dbms|ai|maths|operating systems|computer networks)\b", lowered_l)
+            if m:
+                subject = m.group(1)
+                # Beautify common subjects
+                if subject.lower() == "dbms":
+                    subject = "DBMS"
+                elif subject.lower() == "ai":
+                    subject = "AI"
+                elif subject.lower() == "maths":
+                    subject = "Maths"
+                elif subject.lower() == "operating systems":
+                    subject = "Operating Systems"
+                elif subject.lower() == "computer networks":
+                    subject = "Computer Networks"
+            else:
+                m2 = re.search(r"\b(in|for)\s+([A-Za-z][A-Za-z0-9&._\- ]*)\b", text)
+                if m2:
+                    subject = m2.group(2).strip()
+
+            # student_name extraction similar to marks
+            student_name = IntentEngine._offline_extract_student_name(text)
+
+            return IntentEngine._validate_intent({
+                "action": "read",
+                "table": "attendance",
+                "filters": {
+                    "student_id": None,
+                    "student_name": student_name,
+                    "subject": subject,
+                    "date": None,
+                    "status": None,
+                },
+            })
+
+        # Default to unsupported
+        return IntentEngine._fallback_intent()
+
+    @staticmethod
+    def _offline_extract_student_name(text: str) -> Any:
+        candidate = None
+        mname = re.search(r"\b([A-Z][a-z]+)'s\b", text)
+        if mname:
+            candidate = mname.group(1)
+            if candidate.lower() in {
+                "what",
+                "whats",
+                "who",
+                "whos",
+                "where",
+                "when",
+                "why",
+                "how",
+                "that",
+                "this",
+                "these",
+                "those",
+                "there",
+                "let",
+                "lets",
+            }:
+                candidate = None
+
+        return candidate
 
     @staticmethod
     def _fallback_intent() -> Dict[str, Any]:
