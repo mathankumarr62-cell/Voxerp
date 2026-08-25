@@ -263,11 +263,83 @@ Classification rules:
             for key in allowed_filters
         }
 
+        # Sanitize student_name and subject to avoid question words or
+        # self-references becoming student targets (e.g. "what", "what's",
+        # "my", "me"). This ensures the intent contract stays safe and
+        # RBAC receives None for ambiguous/self references.
+        cleaned_filters["student_name"] = IntentEngine._sanitize_student_name(cleaned_filters.get("student_name"))
+        cleaned_filters["subject"] = IntentEngine._sanitize_subject(cleaned_filters.get("subject"))
+
         return {
             "action": action,
             "table": table,
             "filters": cleaned_filters,
         }
+
+    @staticmethod
+    def _sanitize_student_name(name: Any) -> Any:
+        """Normalize student_name values: return None for pronouns, question
+        words, or other non-name tokens. Preserve real-looking names.
+        """
+        if not isinstance(name, str):
+            return None
+
+        candidate = name.strip()
+        if not candidate:
+            return None
+
+        # Strip possessive trailing "'s" or trailing punctuation
+        candidate = re.sub(r"(?:'s)$", "", candidate)
+        candidate = candidate.strip("\"' .?,!")
+
+        lower = candidate.lower()
+        forbidden = {
+            "me",
+            "my",
+            "myself",
+            "i",
+            "you",
+            "your",
+            "what",
+            "whats",
+            "what's",
+            "which",
+            "who",
+            "whos",
+            "who's",
+            "how",
+            "show",
+            "tell",
+            "give",
+            "the",
+            "that",
+            "this",
+            "these",
+            "those",
+            "attendance",
+        }
+
+        if lower in forbidden:
+            return None
+
+        # If the token contains whitespace or looks like a sentence fragment,
+        # avoid treating it as a name.
+        if " " in candidate or any(c in candidate for c in "?/;:"):
+            return None
+
+        return candidate
+
+    @staticmethod
+    def _sanitize_subject(subject: Any) -> Any:
+        if not isinstance(subject, str):
+            return None
+        candidate = subject.strip()
+        if not candidate:
+            return None
+        # simple sanitation: avoid question words being a subject
+        if candidate.lower() in {"what", "whats", "what's", "which", "that", "this"}:
+            return None
+        return candidate
 
     @staticmethod
     def _apply_write_safety_guard(
@@ -334,14 +406,10 @@ Classification rules:
 
             if name_match:
                 candidate = name_match.group(1)
-
-                if candidate.lower() not in {
-                    "me",
-                    "myself",
-                    "my",
-                    "attendance",
-                }:
-                    guarded_filters["student_name"] = candidate
+                # Sanitize extracted candidate before treating it as a name
+                sanitized = IntentEngine._sanitize_student_name(candidate)
+                if sanitized:
+                    guarded_filters["student_name"] = sanitized
 
         # Recover a subject only when it is explicitly introduced by "in".
         # Example:
@@ -357,13 +425,9 @@ Classification rules:
 
             if subject_match:
                 candidate_subject = subject_match.group(1)
-
-                if candidate_subject.lower() not in {
-                    "the",
-                    "class",
-                    "attendance",
-                }:
-                    guarded_filters["subject"] = candidate_subject
+                sanitized_subject = IntentEngine._sanitize_subject(candidate_subject)
+                if sanitized_subject:
+                    guarded_filters["subject"] = sanitized_subject
 
         return {
             "action": "write",
