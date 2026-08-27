@@ -201,41 +201,83 @@ def get_attendance(student_id: str, subject: str) -> Dict[str, Any]:
         conn.close()
 
 
-def get_marks(student_id: str, subject: str) -> Dict[str, Any]:
+def get_marks(student_id: str, subject: str = None) -> Dict[str, Any]:
     if not student_id:
         raise ValueError("student_id is required")
-    if not subject:
-        raise ValueError("subject is required")
 
     conn = _connect()
     try:
         if not _student_exists(conn, student_id):
             return {"status": "not_found", "message": f"I couldn't find student {student_id}"}
 
-        normalized_subject = _normalize_subject(subject)
-        if not normalized_subject:
-            return {"status": "not_found", "message": "I couldn't find that subject"}
+        if subject:
+            normalized_subject = _normalize_subject(subject)
+            if not normalized_subject:
+                return {"status": "not_found", "message": "I couldn't find that subject"}
 
+            rows = conn.execute(
+                "SELECT exam_name, score FROM marks "
+                "WHERE student_id = ? AND lower(replace(subject, ' ', '')) = ? "
+                "ORDER BY exam_name",
+                (student_id, normalized_subject),
+            ).fetchall()
+
+            if not rows:
+                if _subject_exists(conn, subject):
+                    return {"status": "no_data", "message": f"No marks recorded for {subject}"}
+                return {"status": "not_found", "message": f"I couldn't find subject {subject}"}
+
+            row_payloads = [
+                {"exam_name": row["exam_name"], "score": row["score"]}
+                for row in rows
+            ]
+            summary_parts = [
+                f"{row['exam_name']}={row['score']}"
+                for row in row_payloads
+            ]
+
+            return {
+                "status": "ok",
+                "rows": row_payloads,
+                "message": f"Marks for {subject}: {', '.join(summary_parts)}",
+            }
+
+        # No subject supplied: return all marks for the student.
         rows = conn.execute(
-            "SELECT exam_name, score FROM marks WHERE student_id = ? AND lower(replace(subject, ' ', '')) = ? ORDER BY exam_name",
-            (student_id, normalized_subject),
+            "SELECT subject, exam_name, score "
+            "FROM marks WHERE student_id = ? "
+            "ORDER BY subject, exam_name",
+            (student_id,),
         ).fetchall()
 
         if not rows:
-            if _subject_exists(conn, subject):
-                return {"status": "no_data", "message": f"No marks recorded for {subject}"}
-            return {"status": "not_found", "message": f"I couldn't find subject {subject}"}
+            return {
+                "status": "no_data",
+                "message": f"No marks recorded for {student_id}",
+            }
 
-        row_payloads = [{"exam_name": row["exam_name"], "score": row["score"]} for row in rows]
-        summary_parts = [f"{row['exam_name']}={row['score']}" for row in row_payloads]
+        row_payloads = [
+            {
+                "subject": row["subject"],
+                "exam_name": row["exam_name"],
+                "score": row["score"],
+            }
+            for row in rows
+        ]
+
+        summary_parts = [
+            f"{row['subject']} {row['exam_name']}={row['score']}"
+            for row in row_payloads
+        ]
+
         return {
             "status": "ok",
             "rows": row_payloads,
-            "message": f"Marks for {subject}: {', '.join(summary_parts)}",
+            "message": f"Marks for {student_id}: {', '.join(summary_parts)}",
         }
+
     finally:
         conn.close()
-
 
 def get_timetable(student_id: str) -> Dict[str, Any]:
     if not student_id:

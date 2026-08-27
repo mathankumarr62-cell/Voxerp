@@ -120,7 +120,7 @@ class PersonBTests(unittest.TestCase):
 
         teacher = authorize_request(user_id="teacher-1", role="teacher", intent={"action": "read", "table": "marks", "filters": {"student_id": None, "student_name": None, "subject": None, "date": None, "status": None}}, text="show me marks")
         self.assertFalse(teacher["allowed"])
-        self.assertEqual(teacher["reason"], "teacher_scope_unknown")
+        self.assertEqual(teacher["reason"], "ambiguous_target")
 
     def test_response_generator_handles_adapter_statuses(self) -> None:
         self.assertIn("no recorded", generate_response({"status": "no_data", "message": "No attendance recorded for DBMS"}))

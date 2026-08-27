@@ -29,8 +29,11 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
         self_reference = _is_self_reference(text or "")
 
         if target_student_id is None:
-            if _mentions_other_student(text or ""):
+            lowered_text = (text or "").lower()
+            if "another student" in lowered_text or "another student's" in lowered_text:
                 return {"allowed": False, "reason": "unauthorized_target", "message": "You can only access your own data."}
+            if _mentions_other_student(text or ""):
+                return {"allowed": False, "reason": "ambiguous_target", "message": "I couldn't safely determine which student you meant."}
             if self_reference:
                 target_student_id = user_id
             else:
@@ -45,22 +48,57 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
         return {"allowed": True, "reason": None, "message": None, "target_student_id": target_student_id}
 
     if normalized_role == "teacher":
+        # Never treat the teacher's ID as a student ID.
         target_student_id = _resolve_target_student_id(filters)
-        if target_student_id is None:
-            target_student_id = user_id
 
-        if _teacher_permitted_class(user_id) is None:
+        # No student was specified.
+        # Fail closed as ambiguous.
+        if target_student_id is None:
+            return {
+                "allowed": False,
+                "reason": "ambiguous_target",
+                "message": "I couldn't safely determine which student you meant.",
+            }
+
+        # Find the teacher's assigned class.
+        permitted_class = _teacher_permitted_class(user_id)
+
+        # No class assignment = fail closed.
+        if permitted_class is None:
             return {
                 "allowed": False,
                 "reason": "teacher_scope_unknown",
-                "message": "The current database does not define teacher class membership, so access is blocked safely.",
+                "message": (
+                    "The current database does not define teacher "
+                    "class membership, so access is blocked safely."
+                ),
             }
 
+        # Check that requested student exists.
         student_class = _student_class(target_student_id)
-        if student_class is None:
-            return {"allowed": False, "reason": "unknown_student", "message": "I couldn't find that student."}
 
-        return {"allowed": True, "reason": None, "message": None, "target_student_id": target_student_id}
+        if student_class is None:
+            return {
+                "allowed": False,
+                "reason": "unknown_student",
+                "message": "I couldn't find that student.",
+            }
+
+        # Check teacher's class scope.
+        if student_class != permitted_class:
+            return {
+                "allowed": False,
+                "reason": "unauthorized_target",
+                "message": "That student is outside your permitted class.",
+            }
+
+        # Teacher is authorized.
+        return {
+            "allowed": True,
+            "reason": None,
+            "message": None,
+            "target_student_id": target_student_id,
+        }
 
     return {"allowed": False, "reason": "invalid_role", "message": "I couldn't determine the user's role."}
 
@@ -79,6 +117,7 @@ def _is_self_reference(text: str) -> bool:
         "show me my",
         "show me myself",
         "me my",
+        " me ",
     ]
     return any(token in lowered for token in explicit_self_patterns)
 
@@ -94,6 +133,8 @@ def _mentions_other_student(text: str) -> bool:
         "another student's attendance",
         "someone else's marks",
         "someone else's attendance",
+        "the student's",
+        "the student",
     ])
 
 
@@ -134,9 +175,17 @@ def _student_class(student_id: str) -> Optional[str]:
 
 
 def _teacher_permitted_class(user_id: str) -> Optional[str]:
-    """The current database does not define a teacher-to-class relationship."""
+    """Return a class permitted for the teacher, or None if none is assigned."""
 
-    return None
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT class_name FROM teacher_classes WHERE teacher_id = ? LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        return row["class_name"] if row else None
+    finally:
+        conn.close()
 
 
 __all__ = ["authorize_request"]

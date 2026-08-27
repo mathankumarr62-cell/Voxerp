@@ -113,8 +113,6 @@ def query():
 
             elif table == "marks":
                 subject = filters.get("subject")
-                if not subject:
-                    return jsonify({"reply_text": "Which subject would you like marks for?"})
                 print(f"[SERVER LOG] Calling db_adapter.get_marks('{target_student_id}', '{subject}')", flush=True)
                 result = db_adapter.get_marks(target_student_id, subject)
 

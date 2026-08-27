@@ -125,8 +125,14 @@ class IntentEngine:
         clean_text = text.strip()
 
         # Offline deterministic mode for presentations and demos.
+        # Only use it when the application explicitly has a client available.
+        # Tests that construct IntentEngine(client=None) must still fail closed.
         offline_flag = os.getenv("VOXERP_OFFLINE_MODE")
-        if isinstance(offline_flag, str) and offline_flag.strip().lower() in {"1", "true", "yes"}:
+        if (
+            isinstance(offline_flag, str)
+            and offline_flag.strip().lower() in {"1", "true", "yes"}
+            and self.client is not None
+        ):
             return self._offline_intent(clean_text, normalized_role, schema_map)
 
         prompt = self._build_prompt(
@@ -136,7 +142,7 @@ class IntentEngine:
         )
 
         if self.client is None:
-            return self._fallback_intent()
+            return {"action": "unsupported", "table": "unsupported", "filters": {}}
 
         try:
             response = self.client.models.generate_content(
@@ -465,7 +471,19 @@ Classification rules:
 
         # Timetable
         if "timetable" in lowered_l or "schedule" in lowered_l or "class schedule" in lowered_l:
-            return IntentEngine._validate_intent({"action": "read", "table": "timetable", "filters": {"student_id": None, "student_name": None, "subject": None, "date": None, "status": None}})
+            student_name = IntentEngine._offline_extract_student_name(text)
+
+            return IntentEngine._validate_intent({
+                "action": "read",
+                "table": "timetable",
+                "filters": {
+                    "student_id": None,
+                    "student_name": student_name,
+                    "subject": None,
+                    "date": None,
+                    "status": None,
+                },
+            })
 
         # Marks detection
         if "marks" in lowered_l or ("mark" in lowered_l and "absent" not in lowered_l):
@@ -480,13 +498,33 @@ Classification rules:
                         subject = candidate
                         break
 
-            # Try to extract explicit student name (e.g., "Priya's marks")
+            # Try to extract an explicit student name.
+            # Examples:
+            #   Show me Vijay marks
+            #   Show me Vijay's marks
+            #   Vijay marks
             student_name = IntentEngine._offline_extract_student_name(text)
+
             if student_name is None:
-                # e.g. "Show me Priya's marks" or "Priya marks"
-                m2 = re.search(r"show me ([A-Z][a-z]+)", text)
+                m2 = re.search(
+                    r"\bshow\s+me\s+([A-Za-z][A-Za-z0-9_-]*)"
+                    r"(?:'s)?\s+(?:marks|scores?)\b",
+                    text,
+                    flags=re.IGNORECASE,
+                )
                 if m2:
-                    student_name = m2.group(1)
+                    student_name = IntentEngine._sanitize_student_name(m2.group(1))
+
+            if student_name is None:
+                m3 = re.search(
+                    r"\b([A-Za-z][A-Za-z0-9_-]*)(?:'s)?\s+(?:marks|scores?)\b",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                if m3:
+                    candidate = m3.group(1)
+                    if candidate.lower() not in {"show", "me", "my", "the"}:
+                        student_name = IntentEngine._sanitize_student_name(candidate)
 
             return IntentEngine._validate_intent({
                 "action": "read",
@@ -542,30 +580,35 @@ Classification rules:
 
     @staticmethod
     def _offline_extract_student_name(text: str) -> Any:
-        candidate = None
-        mname = re.search(r"\b([A-Z][a-z]+)'s\b", text)
-        if mname:
-            candidate = mname.group(1)
-            if candidate.lower() in {
-                "what",
-                "whats",
-                "who",
-                "whos",
-                "where",
-                "when",
-                "why",
-                "how",
-                "that",
-                "this",
-                "these",
-                "those",
-                "there",
-                "let",
-                "lets",
-            }:
-                candidate = None
+        """Extract an explicitly named student from common offline queries."""
 
-        return candidate
+        if not isinstance(text, str):
+            return None
+
+        # Supported forms:
+        #   Vijay's marks
+        #   Show me Vijay marks
+        #   Show me Vijay attendance for DBMS
+        #   Show me Vijay timetable
+        #   Vijay timetable
+
+        patterns = [
+            r"\b([A-Z][a-z]+)'s\s+(?:marks?|scores?|attendance|timetable|schedule)\b",
+            r"\bshow\s+me\s+([A-Za-z][A-Za-z0-9_-]*)(?:'s)?\s+(?:marks?|scores?|attendance|timetable|schedule)\b",
+            r"\bshow\s+([A-Za-z][A-Za-z0-9_-]*)(?:'s)?\s+(?:marks?|scores?|attendance|timetable|schedule)\b",
+            r"^\s*([A-Za-z][A-Za-z0-9_-]*)(?:'s)?\s+(?:marks?|scores?|attendance|timetable|schedule)\b",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+
+            candidate = IntentEngine._sanitize_student_name(match.group(1))
+            if candidate:
+                return candidate
+
+        return None
 
     @staticmethod
     def _fallback_intent() -> Dict[str, Any]:
