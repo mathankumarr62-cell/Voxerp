@@ -1,15 +1,53 @@
-import sqlite3
 from typing import Any, Dict, Optional
 
 from db_adapter import _connect
 from rag.retriever import retrieve_policy
 
 
+class PolicyEngine:
+    """Retrieve policy context; it never makes the final authorization decision."""
+
+    def evaluate(self, role: str, text: str = "") -> Dict[str, Any]:
+        policy_context = retrieve_policy(role, text)
+        return {
+            "policy_context": policy_context,
+            "has_policy": bool(policy_context.strip()),
+        }
+
+
+class DataRouter:
+    """Choose the source for a request: structured SQL data or RAG knowledge."""
+
+    RAG_KEYWORDS = {
+        "policy", "policies", "regulation", "regulations", "rule", "rules",
+        "syllabus", "faq", "guideline", "guidelines", "document", "documents",
+        "procedure", "procedures",
+    }
+    SQL_TABLES = {"students", "marks", "attendance", "timetable", "exams"}
+
+    def route(self, intent: Dict[str, Any], text: str = "") -> str:
+        table = intent.get("table") if isinstance(intent, dict) else None
+        if table in self.SQL_TABLES:
+            return "sql"
+
+        lowered = (text or "").strip().lower()
+        if any(keyword in lowered for keyword in self.RAG_KEYWORDS):
+            return "rag"
+
+        return "sql"
+
+
+policy_engine = PolicyEngine()
+data_router = DataRouter()
+
+
 def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str = "") -> Dict[str, Any]:
     """Return a structured authorization decision before any adapter call."""
-    # Retrieve authorization policy context using RAG.
-    # RAG provides policy context only; deterministic RBAC remains authoritative for the final security decision.
-    policy_context = retrieve_policy(role, text)
+    # Policy Engine retrieves context; deterministic RBAC remains authoritative.
+    policy_result = policy_engine.evaluate(role, text)
+    policy_context = policy_result["policy_context"]
+    data_source = data_router.route(intent, text)
+    _ = (policy_context, data_source)
     if not user_id or not isinstance(user_id, str):
         return {"allowed": False, "reason": "missing_user", "message": "I couldn't identify the current user."}
 
@@ -191,4 +229,4 @@ def _teacher_permitted_class(user_id: str) -> Optional[str]:
         conn.close()
 
 
-__all__ = ["authorize_request"]
+__all__ = ["authorize_request", "PolicyEngine", "DataRouter", "policy_engine", "data_router"]
