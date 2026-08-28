@@ -1,0 +1,19 @@
+VOXERP STUDENT AUTHORIZATION POLICY
+
+Role: student
+
+Students may:
+- View their own marks.
+- View their own attendance.
+- View their own timetable.
+
+Students may not:
+- View another student's marks.
+- View another student's attendance.
+- View another student's timetable.
+- Modify another student's data.
+- Modify attendance unless explicitly permitted by the application.
+
+If the requested student cannot be safely identified, access must be denied or clarification must be requested.
+
+The student's identity must be verified using the application's authenticated user ID and database records.

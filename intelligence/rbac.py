@@ -2,11 +2,14 @@ import sqlite3
 from typing import Any, Dict, Optional
 
 from db_adapter import _connect
+from rag.retriever import retrieve_policy
 
 
 def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str = "") -> Dict[str, Any]:
     """Return a structured authorization decision before any adapter call."""
-
+    # Retrieve authorization policy context using RAG.
+    # RAG provides policy context only; deterministic RBAC remains authoritative for the final security decision.
+    policy_context = retrieve_policy(role, text)
     if not user_id or not isinstance(user_id, str):
         return {"allowed": False, "reason": "missing_user", "message": "I couldn't identify the current user."}
 

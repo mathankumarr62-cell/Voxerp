@@ -1,0 +1,18 @@
+VOXERP TEACHER AUTHORIZATION POLICY
+
+Role: teacher
+
+Teachers may:
+- View marks for students within their permitted class.
+- View attendance for students within their permitted class.
+- View timetable information for students within their permitted class.
+- Mark attendance for students within their permitted class.
+
+Teachers may not:
+- Access students outside their permitted class.
+- Access student information when the target student cannot be safely identified.
+- Modify attendance for students outside their permitted class.
+
+Teacher permissions must be verified against the application's database.
+
+RAG policy retrieval provides authorization context only. The deterministic RBAC layer must make the final authorization decision.
