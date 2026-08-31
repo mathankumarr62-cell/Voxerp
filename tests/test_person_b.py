@@ -464,10 +464,27 @@ class PersonBComprehensiveTests(unittest.TestCase):
 
     def test_no_gemini_client_fails_closed(self) -> None:
         """Intent engine fails safely when no Gemini client is available."""
-        engine = IntentEngine(client=None)
-        intent = engine.parse("What's my marks?", "student", self.schema_map)
-        self.assertEqual(intent["action"], "unsupported")
-        self.assertEqual(intent["table"], "unsupported")
+        import os
+
+        class AlwaysNoneClient:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError("No client should be constructed in this test")
+
+        old_key = os.environ.pop("GEMINI_API_KEY", None)
+        old_genai_client = None
+        import intelligence.intent_engine as ie_module
+        old_genai_client = ie_module.genai.Client
+        ie_module.genai.Client = AlwaysNoneClient
+        try:
+            engine = IntentEngine(client=None)
+            self.assertIsNone(engine.client)
+            intent = engine.parse("What's my marks?", "student", self.schema_map)
+            self.assertEqual(intent["action"], "unsupported")
+            self.assertEqual(intent["table"], "unsupported")
+        finally:
+            ie_module.genai.Client = old_genai_client
+            if old_key is not None:
+                os.environ["GEMINI_API_KEY"] = old_key
 
     # =========================================================================
     # Requirement 11: Attendance write requests requiring confirmation flow

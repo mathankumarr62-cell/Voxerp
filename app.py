@@ -4,8 +4,9 @@ import sys
 from flask import Flask, request, jsonify, send_from_directory
 import db_adapter
 from intelligence.intent_engine import IntentEngine
-from intelligence.rbac import authorize_request
+from intelligence.rbac import authorize_request, data_router
 from intelligence.response_generator import generate_response
+from rag.retriever import retrieve_policy
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
@@ -63,9 +64,19 @@ def query():
         auth_res = authorize_request(user_id=user_id, role=role, intent=intent, text=text)
         print(f"[SERVER LOG] authorize_request decision: {auth_res}", flush=True)
 
+        data_source = data_router.route(intent, text)
+        print(f"[SERVER LOG] DataRouter selected source: {data_source}", flush=True)
+
         if not auth_res.get("allowed"):
             print("[SERVER LOG] Authorization DENIED or UNSUPPORTED. db_adapter will NOT be called.", flush=True)
             return jsonify({"reply_text": generate_response(auth_res)})
+
+        if data_source == "rag":
+            policy_context = retrieve_policy(role, text)
+            print("[SERVER LOG] RAG policy context retrieved. SQL/db_adapter will NOT be called.", flush=True)
+            return jsonify({
+                "reply_text": generate_response({"policy_context": policy_context})
+            })
 
         target_student_id = auth_res["target_student_id"]
         action = intent.get("action")
