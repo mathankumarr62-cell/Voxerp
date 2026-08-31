@@ -32,6 +32,32 @@ class DbAdapterTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertGreaterEqual(len(result["rows"]), 1)
 
+    def test_initialize_database_preserves_existing_data(self):
+        conn = sqlite3.connect("voxerp.db")
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO students (id, name, role, class_name) VALUES (?, ?, ?, ?)",
+                ("custom-99", "Custom Student", "student", "CSE-9"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        initialize_database()
+
+        conn = sqlite3.connect("voxerp.db")
+        try:
+            row = conn.execute(
+                "SELECT name FROM students WHERE id = ?",
+                ("custom-99",),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], "Custom Student")
+        finally:
+            conn.execute("DELETE FROM students WHERE id = ?", ("custom-99",))
+            conn.commit()
+            conn.close()
+
     def test_connections_are_closed_without_resource_warnings(self):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", ResourceWarning)
@@ -43,21 +69,22 @@ class DbAdapterTests(unittest.TestCase):
         self.assertEqual([warning for warning in caught if warning.category is ResourceWarning], [])
 
     def test_mark_attendance_is_idempotent_and_logs_once(self):
-        result = mark_attendance("student-1", "dbms", "2026-08-07", "present", "teacher-1")
+        date = "2026-08-20"
+        result = mark_attendance("student-1", "dbms", date, "present", "teacher-1")
         self.assertEqual(result["status"], "created")
 
-        duplicate = mark_attendance("student-1", "dbms", "2026-08-07", "present", "teacher-1")
+        duplicate = mark_attendance("student-1", "dbms", date, "present", "teacher-1")
         self.assertEqual(duplicate["status"], "unchanged")
 
         conn = sqlite3.connect("voxerp.db")
         try:
             row_count = conn.execute(
                 "SELECT COUNT(*) FROM attendance WHERE student_id = ? AND attendance_date = ? AND lower(replace(subject, ' ', '')) = ?",
-                ("student-1", "2026-08-07", "dbms"),
+                ("student-1", date, "dbms"),
             ).fetchone()[0]
             log_count = conn.execute(
-                "SELECT COUNT(*) FROM write_log WHERE actor = ? AND action = 'mark_attendance' AND target = ?",
-                ("teacher-1", "student-1"),
+                "SELECT COUNT(*) FROM write_log WHERE actor = ? AND action = 'mark_attendance' AND target = ? AND attendance_date = ?",
+                ("teacher-1", "student-1", date),
             ).fetchone()[0]
         finally:
             conn.close()
@@ -66,8 +93,9 @@ class DbAdapterTests(unittest.TestCase):
         self.assertEqual(log_count, 1)
 
     def test_mark_attendance_updates_existing_status_without_duplicate_row(self):
-        mark_attendance("student-2", "DBMS", "2026-08-09", "present", "teacher-1")
-        updated = mark_attendance("student-2", "DBMS", "2026-08-09", "absent", "teacher-1")
+        date = "2026-08-21"
+        mark_attendance("student-2", "DBMS", date, "present", "teacher-1")
+        updated = mark_attendance("student-2", "DBMS", date, "absent", "teacher-1")
 
         self.assertEqual(updated["status"], "updated")
 
@@ -75,11 +103,11 @@ class DbAdapterTests(unittest.TestCase):
         try:
             rows = conn.execute(
                 "SELECT status FROM attendance WHERE student_id = ? AND attendance_date = ? AND lower(replace(subject, ' ', '')) = ?",
-                ("student-2", "2026-08-09", "dbms"),
+                ("student-2", date, "dbms"),
             ).fetchall()
             log_count = conn.execute(
-                "SELECT COUNT(*) FROM write_log WHERE actor = ? AND target = ?",
-                ("teacher-1", "student-2"),
+                "SELECT COUNT(*) FROM write_log WHERE actor = ? AND target = ? AND attendance_date = ?",
+                ("teacher-1", "student-2", date),
             ).fetchone()[0]
         finally:
             conn.close()
@@ -89,13 +117,14 @@ class DbAdapterTests(unittest.TestCase):
         self.assertGreaterEqual(log_count, 2)
 
     def test_write_log_uses_actor_id_not_student_id(self):
-        mark_attendance("student-1", "DBMS", "2026-08-10", "present", "teacher-1")
+        date = "2026-08-22"
+        mark_attendance("student-1", "DBMS", date, "present", "teacher-1")
 
         conn = sqlite3.connect("voxerp.db")
         try:
             row = conn.execute(
-                "SELECT actor, target FROM write_log WHERE target = ? ORDER BY id DESC LIMIT 1",
-                ("student-1",),
+                "SELECT actor, target FROM write_log WHERE target = ? AND attendance_date = ? ORDER BY id DESC LIMIT 1",
+                ("student-1", date),
             ).fetchone()
         finally:
             conn.close()
@@ -104,19 +133,20 @@ class DbAdapterTests(unittest.TestCase):
         self.assertEqual(row[1], "student-1")
 
     def test_write_log_records_subject_date_and_status(self):
-        mark_attendance("student-1", "DBMS", "2026-08-11", "absent", "teacher-1")
+        date = "2026-08-23"
+        mark_attendance("student-1", "DBMS", date, "absent", "teacher-1")
 
         conn = sqlite3.connect("voxerp.db")
         try:
             row = conn.execute(
-                "SELECT subject, attendance_date, status FROM write_log WHERE target = ? AND action = 'mark_attendance' ORDER BY id DESC LIMIT 1",
-                ("student-1",),
+                "SELECT subject, attendance_date, status FROM write_log WHERE target = ? AND action = 'mark_attendance' AND attendance_date = ? ORDER BY id DESC LIMIT 1",
+                ("student-1", date),
             ).fetchone()
         finally:
             conn.close()
 
         self.assertEqual(row[0], "DBMS")
-        self.assertEqual(row[1], "2026-08-11")
+        self.assertEqual(row[1], date)
         self.assertEqual(row[2], "absent")
 
     def test_missing_required_field_raises_clear_error(self):
