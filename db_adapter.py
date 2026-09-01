@@ -1,310 +1,911 @@
+﻿"""VoxERP Data Access Layer.
+
+This module provides a single adapter API while allowing either a SQLite mock
+backend for unit tests or the real MariaDB academic database when
+VOXERP_USE_REAL_DB=True.
+"""
+
+from __future__ import annotations
+
 import os
 import re
 import sqlite3
 from typing import Any, Dict, Optional
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "voxerp.db")
+from dotenv import load_dotenv
+import mariadb
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+load_dotenv()
+
+_DB_FILE = os.path.join(os.path.dirname(__file__), "voxerp.db")
+
+
+def _as_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _real_db_enabled() -> bool:
+    return _as_bool(os.getenv("VOXERP_USE_REAL_DB"), default=False)
+
+
+def _get_db_config() -> Dict[str, Any]:
+    return {
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": int(os.getenv("DB_PORT", "3306")),
+        "user": os.getenv("DB_USER", "root"),
+        "password": os.getenv("DB_PASSWORD", ""),
+        "database": os.getenv("DB_NAME", "ramco_academic_system"),
+    }
+
+
+DB_CONFIG = _get_db_config()
+
+
+def _sqlite_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(_DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def initialize_database() -> None:
-    conn = _connect()
+def _close_connection(conn) -> None:
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _get_connection():
+    if not _real_db_enabled():
+        return _sqlite_connect()
+
     try:
-        conn.executescript(
-            """
-            DROP TABLE IF EXISTS write_log;
-
-            CREATE TABLE IF NOT EXISTS students (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                role TEXT NOT NULL,
-                class_name TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS subjects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS attendance (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                attendance_date TEXT NOT NULL,
-                status TEXT NOT NULL,
-                FOREIGN KEY(student_id) REFERENCES students(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS marks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                exam_name TEXT NOT NULL,
-                score REAL NOT NULL,
-                FOREIGN KEY(student_id) REFERENCES students(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS timetable (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT NOT NULL,
-                day TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                slot TEXT NOT NULL,
-                FOREIGN KEY(student_id) REFERENCES students(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS demo_users (
-                id TEXT PRIMARY KEY,
-                role TEXT NOT NULL,
-                name TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS write_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                actor TEXT NOT NULL,
-                action TEXT NOT NULL,
-                target TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                attendance_date TEXT NOT NULL,
-                status TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            );
-            """
-        )
-
-        conn.execute("DELETE FROM students")
-        conn.execute("DELETE FROM subjects")
-        conn.execute("DELETE FROM attendance")
-        conn.execute("DELETE FROM marks")
-        conn.execute("DELETE FROM timetable")
-        conn.execute("DELETE FROM demo_users")
-        conn.execute("DELETE FROM write_log")
-
-        students = [
-            ("student-1", "Vijay", "student", "CSE-1"),
-            ("student-2", "Priya", "student", "CSE-1"),
-            ("student-3", "Asha", "student", "CSE-2"),
-            ("student-4", "Rohan", "student", "CSE-2"),
-            ("student-5", "Meera", "student", "CSE-3"),
-            ("student-6", "Arjun", "student", "CSE-3"),
-        ]
-        conn.executemany("INSERT INTO students (id, name, role, class_name) VALUES (?, ?, ?, ?)", students)
-
-        subjects = ["DBMS", "Operating Systems", "Computer Networks"]
-        conn.executemany("INSERT INTO subjects (name) VALUES (?)", [(s,) for s in subjects])
-
-        attendance_rows = [
-            ("student-1", "DBMS", "2026-08-01", "present"),
-            ("student-1", "DBMS", "2026-08-02", "absent"),
-            ("student-2", "DBMS", "2026-08-01", "present"),
-            ("student-2", "DBMS", "2026-08-02", "present"),
-            ("student-3", "Operating Systems", "2026-08-01", "present"),
-            ("student-4", "Computer Networks", "2026-08-01", "present"),
-        ]
-        conn.executemany(
-            "INSERT INTO attendance (student_id, subject, attendance_date, status) VALUES (?, ?, ?, ?)",
-            attendance_rows,
-        )
-
-        marks_rows = [
-            ("student-1", "DBMS", "Quiz 1", 82.0),
-            ("student-1", "DBMS", "Midterm", 74.0),
-            ("student-2", "DBMS", "Quiz 1", 90.0),
-            ("student-3", "Operating Systems", "Quiz 1", 78.0),
-            ("student-4", "Computer Networks", "Quiz 1", 88.0),
-        ]
-        conn.executemany(
-            "INSERT INTO marks (student_id, subject, exam_name, score) VALUES (?, ?, ?, ?)",
-            marks_rows,
-        )
-
-        timetable_rows = [
-            ("student-1", "Monday", "DBMS", "09:00-10:00"),
-            ("student-1", "Tuesday", "Operating Systems", "11:00-12:00"),
-            ("student-2", "Monday", "DBMS", "09:00-10:00"),
-            ("student-3", "Tuesday", "Operating Systems", "11:00-12:00"),
-        ]
-        conn.executemany(
-            "INSERT INTO timetable (student_id, day, subject, slot) VALUES (?, ?, ?, ?)",
-            timetable_rows,
-        )
-
-        demo_users = [
-            ("student-1", "student", "Vijay"),
-            ("student-2", "student", "Priya"),
-            ("teacher-1", "teacher", "Ms. Rao"),
-        ]
-        conn.executemany("INSERT INTO demo_users (id, role, name) VALUES (?, ?, ?)", demo_users)
-
-        conn.commit()
-    finally:
-        conn.close()
+        return mariadb.connect(**DB_CONFIG)
+    except mariadb.Error as exc:
+        raise RuntimeError(f"Failed to connect to MariaDB: {exc}") from exc
 
 
 def _normalize_subject(subject: Optional[str]) -> Optional[str]:
     if subject is None:
         return None
-    return re.sub(r"\s+", "", subject).lower()
+    compact = re.sub(r"[^a-z0-9]+", "", str(subject).strip().lower())
+    return compact or None
 
 
-def _student_exists(conn: sqlite3.Connection, student_id: str) -> bool:
-    row = conn.execute("SELECT 1 FROM students WHERE id = ?", (student_id,)).fetchone()
-    return row is not None
+def _student_record_to_dict(row) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        values = tuple(row)
+    else:
+        values = tuple(row)
+    return {
+        "id": values[0],
+        "name": values[1],
+        "reg_no": values[2],
+        "batch": values[3],
+        "year": values[4],
+        "semester": values[5],
+        "section": values[6],
+        "email": values[7],
+        "department_id": values[8],
+    }
 
 
-def _subject_exists(conn: sqlite3.Connection, subject: str) -> bool:
-    normalized = _normalize_subject(subject)
-    if not normalized:
-        return False
-    row = conn.execute("SELECT 1 FROM subjects WHERE lower(replace(name, ' ', '')) = ?", (normalized,)).fetchone()
-    return row is not None
+def _course_record_to_dict(row) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+    values = tuple(row)
+    return {
+        "id": values[0],
+        "course_code": values[1],
+        "title": values[2],
+        "year": values[3],
+        "semester": values[4],
+        "department_id": values[5],
+    }
 
 
-def get_attendance(student_id: str, subject: str) -> Dict[str, Any]:
-    if not student_id:
-        raise ValueError("student_id is required")
-    if not subject:
-        raise ValueError("subject is required")
-
-    conn = _connect()
+def _sqlite_seed() -> None:
+    conn = _sqlite_connect()
     try:
-        if not _student_exists(conn, student_id):
-            return {"status": "not_found", "message": f"I couldn't find student {student_id}"}
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS students (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                reg_no TEXT,
+                batch TEXT,
+                year INTEGER,
+                semester INTEGER,
+                section TEXT,
+                email TEXT,
+                department_id INTEGER,
+                role TEXT,
+                class_name TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id TEXT,
+                subject TEXT,
+                attendance_date TEXT,
+                status TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS write_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor TEXT,
+                action TEXT,
+                target TEXT,
+                subject TEXT,
+                attendance_date TEXT,
+                status TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS courses (
+                id INTEGER PRIMARY KEY,
+                course_code TEXT,
+                title TEXT,
+                year INTEGER,
+                semester INTEGER,
+                department_id INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS enrollments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id TEXT,
+                course_id INTEGER,
+                enrollment_date TEXT,
+                course_code TEXT,
+                course_title TEXT,
+                year INTEGER,
+                semester INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS timetable (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id TEXT,
+                day TEXT,
+                section TEXT,
+                year INTEGER,
+                semester INTEGER,
+                period TEXT,
+                course_id INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS marks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id TEXT,
+                exam_name TEXT,
+                course_code TEXT,
+                course_title TEXT,
+                date TEXT,
+                marks_obtained INTEGER,
+                max_marks INTEGER
+            )
+            """
+        )
 
-        normalized_subject = _normalize_subject(subject)
-        if not normalized_subject:
-            return {"status": "not_found", "message": "I couldn't find that subject"}
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voxerp_demo_users (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                name TEXT NOT NULL,
+                real_student_id TEXT
+            )
+            """
+        )
 
-        rows = conn.execute(
-            "SELECT attendance_date, status FROM attendance WHERE student_id = ? AND lower(replace(subject, ' ', '')) = ? ORDER BY attendance_date",
-            (student_id, normalized_subject),
-        ).fetchall()
+        conn.execute(
+            "INSERT OR IGNORE INTO voxerp_demo_users (id, role, name, real_student_id) VALUES (?, ?, ?, ?)",
+            ("student-1", "student", "Alice Johnson", "student-1"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO voxerp_demo_users (id, role, name, real_student_id) VALUES (?, ?, ?, ?)",
+            ("student-2", "student", "Bob Smith", "student-2"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO voxerp_demo_users (id, role, name, real_student_id) VALUES (?, ?, ?, ?)",
+            ("student-6", "student", "Charlie Young", "student-6"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO voxerp_demo_users (id, role, name, real_student_id) VALUES (?, ?, ?, ?)",
+            ("teacher-1", "teacher", "Teacher One", None),
+        )
 
-        if not rows:
-            if _subject_exists(conn, subject):
-                return {"status": "no_data", "message": f"No attendance recorded for {subject}"}
-            return {"status": "not_found", "message": f"I couldn't find subject {subject}"}
-
-        row_payloads = [{"date": row["attendance_date"], "status": row["status"]} for row in rows]
-        summary_parts = [f"{row['date']}={row['status']}" for row in row_payloads]
-        return {
-            "status": "ok",
-            "rows": row_payloads,
-            "message": f"Attendance for {subject}: {', '.join(summary_parts)}",
-        }
+        conn.execute(
+            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("student-1", "Alice Johnson", "2024001", "2024", 2, 3, "A", "alice@example.com", 1, "student", "CSE-A"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("student-2", "Bob Smith", "2024002", "2024", 2, 3, "A", "bob@example.com", 1, "student", "CSE-A"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("student-6", "Charlie Young", "2024006", "2024", 2, 3, "A", "charlie@example.com", 1, "student", "CSE-A"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("student-priya", "Priya", "2024007", "2024", 2, 3, "A", "priya@example.com", 1, "student", "CSE-A"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("student-vijay", "Vijay", "2024008", "2024", 2, 3, "A", "vijay@example.com", 1, "student", "CSE-A"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("teacher-1", "Teacher One", "T001", "2024", 2, 3, "A", "teacher@example.com", 1, "teacher", "CSE-A"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO courses (id, course_code, title, year, semester, department_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (1, "DBMS", "Database Management Systems", 2, 3, 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO attendance (student_id, subject, attendance_date, status)
+            SELECT ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM attendance
+                WHERE student_id = ? AND subject = ? AND attendance_date = ?
+            )
+            """,
+            (
+                "student-1", "DBMS", "2026-08-20", "present",
+                "student-1", "DBMS", "2026-08-20",
+            ),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO enrollments (student_id, course_id, enrollment_date, course_code, course_title, year, semester) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("student-1", 1, "2026-08-01", "DBMS", "Database Management Systems", 2, 3),
+        )
+        conn.execute(
+            """
+            INSERT INTO marks (
+                student_id, exam_name, course_code, course_title,
+                date, marks_obtained, max_marks
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM marks
+                WHERE student_id = ?
+                  AND exam_name = ?
+                  AND course_code = ?
+                  AND date = ?
+            )
+            """,
+            (
+                "student-1", "Unit Test 1", "DBMS",
+                "Database Management Systems", "2026-08-15", 88, 100,
+                "student-1", "Unit Test 1", "DBMS", "2026-08-15",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO timetable (
+                student_id, day, section, year, semester, period, course_id
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM timetable
+                WHERE student_id = ?
+                  AND day = ?
+                  AND period = ?
+            )
+            """,
+            (
+                "student-1", "Monday", "A", 2, 3, "period_1", 1,
+                "student-1", "Monday", "period_1",
+            ),
+        )
+        conn.commit()
     finally:
-        conn.close()
+        _close_connection(conn)
 
 
-def get_marks(student_id: str, subject: str = None) -> Dict[str, Any]:
-    if not student_id:
-        raise ValueError("student_id is required")
-
-    conn = _connect()
+def check_connection() -> bool:
+    """Check if the selected database backend is reachable."""
+    conn = None
     try:
-        if not _student_exists(conn, student_id):
-            return {"status": "not_found", "message": f"I couldn't find student {student_id}"}
+        conn = _get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        return True
+    except Exception as exc:
+        msg = str(exc)
+        if "password" in msg.lower() or "auth" in msg.lower() or "access denied" in msg.lower():
+            msg = "database authentication failed"
+        print(f"Database connection test failed: {msg}")
+        return False
+    finally:
+        _close_connection(conn)
 
-        if subject:
-            normalized_subject = _normalize_subject(subject)
-            if not normalized_subject:
-                return {"status": "not_found", "message": "I couldn't find that subject"}
 
-            rows = conn.execute(
-                "SELECT exam_name, score FROM marks "
-                "WHERE student_id = ? AND lower(replace(subject, ' ', '')) = ? "
-                "ORDER BY exam_name",
-                (student_id, normalized_subject),
-            ).fetchall()
+def test_connection() -> bool:
+    """Backward-compatible alias for older callers and tests."""
+    return check_connection()
 
-            if not rows:
-                if _subject_exists(conn, subject):
-                    return {"status": "no_data", "message": f"No marks recorded for {subject}"}
-                return {"status": "not_found", "message": f"I couldn't find subject {subject}"}
 
-            row_payloads = [
-                {"exam_name": row["exam_name"], "score": row["score"]}
+def initialize_database() -> Dict[str, Any]:
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS voxerp_write_log (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    actor_id VARCHAR(255) NOT NULL,
+                    action VARCHAR(255) NOT NULL,
+                    target_student_id VARCHAR(255),
+                    course_id INT,
+                    attendance_date DATE,
+                    status VARCHAR(50),
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_target_date (target_student_id, attendance_date),
+                    INDEX idx_actor_time (actor_id, timestamp)
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS voxerp_demo_users (
+                    id VARCHAR(255) PRIMARY KEY,
+                    role VARCHAR(50) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    real_student_id VARCHAR(255),
+                    INDEX idx_role (role)
+                )
+                """
+            )
+            cursor.execute("SELECT COUNT(*) FROM voxerp_demo_users")
+            if cursor.fetchone()[0] == 0:
+                cursor.executemany(
+                    "INSERT INTO voxerp_demo_users (id, role, name, real_student_id) VALUES (%s, %s, %s, %s)",
+                    [
+                        ("demo-student-1", "student", "Demo Student", None),
+                        ("demo-student-2", "student", "Another Student", None),
+                        ("demo-teacher-1", "teacher", "Demo Teacher", None),
+                    ],
+                )
+            conn.commit()
+            return {"status": "ok", "message": "Database initialized successfully"}
+        except mariadb.Error as exc:
+            return {"status": "error", "message": f"Failed to initialize database: {exc}"}
+        finally:
+            _close_connection(conn)
+
+    _sqlite_seed()
+    return {"status": "ok", "message": "SQLite mock database initialized successfully"}
+
+
+def list_demo_users() -> list:
+    """Return demo users from the configured database."""
+    conn = _get_connection()
+    try:
+        if _real_db_enabled():
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, role, name FROM voxerp_demo_users ORDER BY id"
+            )
+            rows = cursor.fetchall()
+            return [
+                {"id": row[0], "role": row[1], "name": row[2]}
                 for row in rows
             ]
-            summary_parts = [
-                f"{row['exam_name']}={row['score']}"
-                for row in row_payloads
-            ]
 
-            return {
-                "status": "ok",
-                "rows": row_payloads,
-                "message": f"Marks for {subject}: {', '.join(summary_parts)}",
-            }
-
-        # No subject supplied: return all marks for the student.
         rows = conn.execute(
-            "SELECT subject, exam_name, score "
-            "FROM marks WHERE student_id = ? "
-            "ORDER BY subject, exam_name",
-            (student_id,),
+            "SELECT id, role, name FROM voxerp_demo_users ORDER BY id"
         ).fetchall()
-
-        if not rows:
-            return {
-                "status": "no_data",
-                "message": f"No marks recorded for {student_id}",
-            }
-
-        row_payloads = [
-            {
-                "subject": row["subject"],
-                "exam_name": row["exam_name"],
-                "score": row["score"],
-            }
+        return [
+            {"id": row["id"], "role": row["role"], "name": row["name"]}
             for row in rows
         ]
+    finally:
+        _close_connection(conn)
 
-        summary_parts = [
-            f"{row['subject']} {row['exam_name']}={row['score']}"
-            for row in row_payloads
-        ]
+
+def get_demo_user(user_id: str) -> Optional[Dict[str, Any]]:
+    """Return a demo user's identity and role."""
+    conn = _get_connection()
+    try:
+        if _real_db_enabled():
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, role, name, real_student_id "
+                "FROM voxerp_demo_users WHERE id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "role": row[1],
+                "name": row[2],
+                "real_student_id": row[3],
+            }
+
+        row = conn.execute(
+            """
+            SELECT id, role, name, real_student_id
+            FROM voxerp_demo_users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        if not row:
+            return None
 
         return {
-            "status": "ok",
-            "rows": row_payloads,
-            "message": f"Marks for {student_id}: {', '.join(summary_parts)}",
+            "id": row["id"],
+            "role": row["role"],
+            "name": row["name"],
+            "real_student_id": row["real_student_id"],
         }
-
     finally:
-        conn.close()
+        _close_connection(conn)
 
-def get_timetable(student_id: str) -> Dict[str, Any]:
+
+def resolve_demo_user_student_id(user_id: str) -> Optional[str]:
+    """Resolve a demo user's real student ID without guessing."""
+    user = get_demo_user(user_id)
+
+    if not user or user.get("role") != "student":
+        return None
+
+    return user.get("real_student_id")
+
+
+def lookup_student(student_id: Optional[str] = None, name: Optional[str] = None, reg_no: Optional[str] = None) -> Dict[str, Any]:
+    if not any([student_id, name, reg_no]):
+        raise ValueError("student_id, reg_no, or name is required")
+
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+
+            if student_id:
+                cursor.execute(
+                    """
+                    SELECT id, name, reg_no, batch, year, semester, section, email, department_id
+                    FROM user_accounts_studentdetails
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (student_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return {"status": "ok", "student": _student_record_to_dict(row), "message": f"Found student {row[1]}"}
+                return {"status": "not_found", "student": None, "message": f"I couldn't find student {student_id}"}
+
+            if reg_no:
+                cursor.execute(
+                    "SELECT id, name, reg_no, batch, year, semester, section, email, department_id FROM user_accounts_studentdetails WHERE LOWER(reg_no) = LOWER(%s) LIMIT 10",
+                    (str(reg_no).strip(),),
+                )
+                rows = cursor.fetchall()
+                if len(rows) == 1:
+                    return {"status": "ok", "student": _student_record_to_dict(rows[0]), "message": f"Found student {rows[0][1]}"}
+                if len(rows) > 1:
+                    return {"status": "ambiguous", "student": None, "candidates": [_student_record_to_dict(r) for r in rows], "message": f"Found multiple students with registration number {reg_no}"}
+                return {"status": "not_found", "student": None, "message": f"I couldn't find registration number {reg_no}"}
+
+            normalized = str(name).strip()
+            cursor.execute(
+                "SELECT id, name, reg_no, batch, year, semester, section, email, department_id FROM user_accounts_studentdetails WHERE LOWER(name) = LOWER(%s) LIMIT 10",
+                (normalized,),
+            )
+            rows = cursor.fetchall()
+            if len(rows) == 1:
+                return {"status": "ok", "student": _student_record_to_dict(rows[0]), "message": f"Found student {rows[0][1]}"}
+            if len(rows) > 1:
+                return {"status": "ambiguous", "student": None, "candidates": [_student_record_to_dict(r) for r in rows], "message": f"Found {len(rows)} students with that name: {', '.join(r[1] for r in rows[:5])}. Please be more specific."}
+
+            cursor.execute(
+                "SELECT id, name, reg_no, batch, year, semester, section, email, department_id FROM user_accounts_studentdetails WHERE LOWER(name) LIKE LOWER(%s) LIMIT 10",
+                (f"%{normalized}%",),
+            )
+            rows = cursor.fetchall()
+            if len(rows) == 1:
+                return {"status": "ok", "student": _student_record_to_dict(rows[0]), "message": f"Found student {rows[0][1]}"}
+            if len(rows) > 1:
+                return {"status": "ambiguous", "student": None, "candidates": [_student_record_to_dict(r) for r in rows], "message": f"Found {len(rows)} students matching '{name}': {', '.join(r[1] for r in rows[:5])}. Please be more specific."}
+            return {"status": "not_found", "student": None, "message": f"I couldn't find a student named {name}"}
+        except mariadb.Error as exc:
+            return {"status": "error", "student": None, "message": f"Database error while looking up student: {exc}"}
+        finally:
+            _close_connection(conn)
+
+    conn = _sqlite_connect()
+    try:
+        if student_id:
+            row = conn.execute("SELECT id, name, reg_no, batch, year, semester, section, email, department_id FROM students WHERE id = ? LIMIT 1", (student_id,)).fetchone()
+            if row is None:
+                return {"status": "not_found", "student": None, "message": f"I couldn't find student {student_id}"}
+            return {"status": "ok", "student": dict(row), "message": f"Found student {row['name']}"}
+
+        if reg_no:
+            rows = conn.execute("SELECT id, name, reg_no, batch, year, semester, section, email, department_id FROM students WHERE LOWER(reg_no) = LOWER(?) LIMIT 10", (str(reg_no).strip(),)).fetchall()
+            if len(rows) == 1:
+                return {"status": "ok", "student": dict(rows[0]), "message": f"Found student {rows[0]['name']}"}
+            if len(rows) > 1:
+                return {"status": "ambiguous", "student": None, "candidates": [dict(r) for r in rows], "message": f"Found multiple students with registration number {reg_no}"}
+            return {"status": "not_found", "student": None, "message": f"I couldn't find registration number {reg_no}"}
+
+        normalized = str(name).strip()
+        rows = conn.execute("SELECT id, name, reg_no, batch, year, semester, section, email, department_id FROM students WHERE LOWER(name) = LOWER(?) LIMIT 10", (normalized,)).fetchall()
+        if len(rows) == 1:
+            return {"status": "ok", "student": dict(rows[0]), "message": f"Found student {rows[0]['name']}"}
+        if len(rows) > 1:
+            return {"status": "ambiguous", "student": None, "candidates": [dict(r) for r in rows], "message": f"Found {len(rows)} students with that name: {', '.join(r['name'] for r in rows)}. Please be more specific."}
+
+        rows = conn.execute("SELECT id, name, reg_no, batch, year, semester, section, email, department_id FROM students WHERE LOWER(name) LIKE LOWER(?) LIMIT 10", (f"%{normalized}%",)).fetchall()
+        if len(rows) == 1:
+            return {"status": "ok", "student": dict(rows[0]), "message": f"Found student {rows[0]['name']}"}
+        if len(rows) > 1:
+            return {"status": "ambiguous", "student": None, "candidates": [dict(r) for r in rows], "message": f"Found {len(rows)} students matching '{name}': {', '.join(r['name'] for r in rows)}. Please be more specific."}
+        return {"status": "not_found", "student": None, "message": f"I couldn't find a student named {name}"}
+    finally:
+        _close_connection(conn)
+
+
+def resolve_student_id(name: str) -> Optional[str]:
+    if not name:
+        return None
+    result = lookup_student(name=name)
+    if result["status"] == "ok" and result.get("student"):
+        return result["student"]["id"]
+    return None
+
+
+def resolve_student_name(student_id: str) -> Optional[str]:
+    if not student_id:
+        return None
+    result = lookup_student(student_id=student_id)
+    if result["status"] == "ok" and result.get("student"):
+        return result["student"]["name"]
+    return None
+
+
+def lookup_course(course_code: Optional[str] = None, title: Optional[str] = None) -> Dict[str, Any]:
+    if not any([course_code, title]):
+        raise ValueError("course_code or title is required")
+
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+
+            if course_code:
+                cursor.execute("SELECT id, course_code, title, year, semester, department_id FROM course_management_course WHERE course_code = %s LIMIT 1", (course_code,))
+                row = cursor.fetchone()
+                if row:
+                    return {"status": "ok", "course": _course_record_to_dict(row), "message": f"Found course {row[2]}"}
+                return {"status": "not_found", "course": None, "message": f"I couldn't find course {course_code}"}
+
+            normalized = str(title).strip().lower()
+            cursor.execute("SELECT id, course_code, title, year, semester, department_id FROM course_management_course WHERE LOWER(title) = LOWER(%s) LIMIT 10", (normalized,))
+            rows = cursor.fetchall()
+            if len(rows) == 1:
+                return {"status": "ok", "course": _course_record_to_dict(rows[0]), "message": f"Found course {rows[0][2]}"}
+            if len(rows) > 1:
+                return {"status": "ambiguous", "course": None, "message": f"Found {len(rows)} courses matching '{title}': {', '.join(r[2] for r in rows[:5])}"}
+
+            cursor.execute("SELECT id, course_code, title, year, semester, department_id FROM course_management_course WHERE LOWER(title) LIKE LOWER(%s) LIMIT 10", (f"%{normalized}%",))
+            rows = cursor.fetchall()
+            if len(rows) == 1:
+                return {"status": "ok", "course": _course_record_to_dict(rows[0]), "message": f"Found course {rows[0][2]}"}
+            if len(rows) > 1:
+                return {"status": "ambiguous", "course": None, "message": f"Found {len(rows)} courses containing '{title}'"}
+            return {"status": "not_found", "course": None, "message": f"I couldn't find a course titled {title}"}
+        except mariadb.Error as exc:
+            return {"status": "error", "course": None, "message": f"Database error while looking up course: {exc}"}
+        finally:
+            _close_connection(conn)
+
+    conn = _sqlite_connect()
+    try:
+        if course_code:
+            row = conn.execute("SELECT id, course_code, title, year, semester, department_id FROM courses WHERE LOWER(course_code) = LOWER(?) LIMIT 1", (course_code,)).fetchone()
+            if row is None:
+                return {"status": "not_found", "course": None, "message": f"I couldn't find course {course_code}"}
+            return {"status": "ok", "course": dict(row), "message": f"Found course {row['title']}"}
+
+        normalized = str(title).strip().lower()
+        rows = conn.execute("SELECT id, course_code, title, year, semester, department_id FROM courses WHERE LOWER(title) = LOWER(?) LIMIT 10", (normalized,)).fetchall()
+        if len(rows) == 1:
+            return {"status": "ok", "course": dict(rows[0]), "message": f"Found course {rows[0]['title']}"}
+        if len(rows) > 1:
+            return {"status": "ambiguous", "course": None, "message": f"Found {len(rows)} courses matching '{title}'"}
+
+        rows = conn.execute("SELECT id, course_code, title, year, semester, department_id FROM courses WHERE LOWER(title) LIKE LOWER(?) LIMIT 10", (f"%{normalized}%",)).fetchall()
+        if len(rows) == 1:
+            return {"status": "ok", "course": dict(rows[0]), "message": f"Found course {rows[0]['title']}"}
+        if len(rows) > 1:
+            return {"status": "ambiguous", "course": None, "message": f"Found {len(rows)} courses containing '{title}'"}
+        return {"status": "not_found", "course": None, "message": f"I couldn't find a course titled {title}"}
+    finally:
+        _close_connection(conn)
+
+
+def get_enrollment(student_id: str) -> Dict[str, Any]:
     if not student_id:
         raise ValueError("student_id is required")
 
-    conn = _connect()
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM user_accounts_studentdetails WHERE id = %s LIMIT 1", (student_id,))
+            if cursor.fetchone() is None:
+                return {"status": "not_found", "enrollments": [], "message": f"I couldn't find student {student_id}"}
+            cursor.execute(
+                """
+                SELECT ce.id, ce.course_id, ce.enrollment_date, c.course_code, c.title, c.year, c.semester
+                FROM course_management_courseenrollment ce
+                JOIN course_management_course c ON ce.course_id = c.id
+                WHERE ce.student_id = %s
+                ORDER BY c.year, c.semester
+                """,
+                (student_id,),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return {"status": "no_data", "enrollments": [], "message": f"No course enrollments found for student {student_id}"}
+            enrollments = [{"enrollment_id": r[0], "course_id": r[1], "enrollment_date": str(r[2]) if r[2] else None, "course_code": r[3], "course_title": r[4], "year": r[5], "semester": r[6]} for r in rows]
+            return {"status": "ok", "enrollments": enrollments, "message": f"Found {len(enrollments)} course enrollment(s) for student {student_id}"}
+        except mariadb.Error as exc:
+            return {"status": "error", "enrollments": [], "message": f"Database error while looking up enrollments: {exc}"}
+        finally:
+            _close_connection(conn)
+
+    conn = _sqlite_connect()
     try:
-        if not _student_exists(conn, student_id):
-            return {"status": "not_found", "message": f"I couldn't find student {student_id}"}
-
-        rows = conn.execute(
-            "SELECT day, subject, slot FROM timetable WHERE student_id = ? ORDER BY day, slot",
-            (student_id,),
-        ).fetchall()
-
+        row = conn.execute("SELECT id FROM students WHERE id = ? LIMIT 1", (student_id,)).fetchone()
+        if row is None:
+            return {"status": "not_found", "enrollments": [], "message": f"I couldn't find student {student_id}"}
+        rows = conn.execute("SELECT id, course_id, enrollment_date, course_code, course_title, year, semester FROM enrollments WHERE student_id = ? ORDER BY year, semester", (student_id,)).fetchall()
         if not rows:
-            return {"status": "no_data", "message": f"No timetable found for {student_id}"}
+            return {"status": "no_data", "enrollments": [], "message": f"No course enrollments found for student {student_id}"}
+        return {"status": "ok", "enrollments": [{"enrollment_id": r["id"], "course_id": r["course_id"], "enrollment_date": r["enrollment_date"], "course_code": r["course_code"], "course_title": r["course_title"], "year": r["year"], "semester": r["semester"]} for r in rows], "message": f"Found {len(rows)} course enrollment(s) for student {student_id}"}
+    finally:
+        _close_connection(conn)
 
-        row_payloads = [{"day": row["day"], "subject": row["subject"], "slot": row["slot"]} for row in rows]
-        summary_parts = [f"{row['day']} {row['subject']} {row['slot']}" for row in row_payloads]
+
+def get_attendance(student_id: str, subject: Optional[str] = None) -> Dict[str, Any]:
+    if not student_id:
+        raise ValueError("student_id is required")
+
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM user_accounts_studentdetails WHERE id = %s LIMIT 1", (student_id,))
+            if cursor.fetchone() is None:
+                return {"status": "not_found", "rows": [], "message": f"I couldn't find student {student_id}"}
+
+            cursor.execute(
+                """
+                SELECT da.id, da.date, da.full_day_status, da.morning_status, da.afternoon_status, da.remarks, c.course_code, c.title
+                FROM student_management_daily_attendance da
+                LEFT JOIN course_management_course c ON da.course_id = c.id
+                WHERE da.student_id = %s
+                ORDER BY da.date DESC
+                """,
+                (student_id,),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return {"status": "no_data", "rows": [], "message": f"No attendance recorded for student {student_id}"}
+            if subject:
+                normalized = _normalize_subject(subject)
+                rows = [r for r in rows if _normalize_subject(r[6]) == normalized or _normalize_subject(r[7]) == normalized]
+                if not rows:
+                    return {"status": "no_data", "rows": [], "message": f"No attendance recorded for {subject}"}
+            attendance_rows = [{"id": r[0], "date": str(r[1]) if r[1] else None, "status": r[2] or "unmarked", "morning_status": r[3], "afternoon_status": r[4], "remarks": r[5], "course_code": r[6], "course_title": r[7]} for r in rows]
+            summary = ", ".join(f"{r['date']}={r['status']}" for r in attendance_rows[:5])
+            return {"status": "ok", "rows": attendance_rows, "message": f"Attendance for {subject or 'all courses'}: {summary}{'...' if len(attendance_rows) > 5 else ''}"}
+        except mariadb.Error as exc:
+            return {"status": "error", "rows": [], "message": f"Database error while reading attendance: {exc}"}
+        finally:
+            _close_connection(conn)
+
+    conn = _sqlite_connect()
+    try:
+        row = conn.execute("SELECT id FROM students WHERE id = ? LIMIT 1", (student_id,)).fetchone()
+        if row is None:
+            return {"status": "not_found", "rows": [], "message": f"I couldn't find student {student_id}"}
+        rows = conn.execute("SELECT id, attendance_date, status, subject FROM attendance WHERE student_id = ? ORDER BY attendance_date DESC", (student_id,)).fetchall()
+        if not rows:
+            return {"status": "no_data", "rows": [], "message": f"No attendance recorded for student {student_id}"}
+        if subject:
+            rows = [r for r in rows if _normalize_subject(r["subject"]) == _normalize_subject(subject)]
+            if not rows:
+                return {"status": "no_data", "rows": [], "message": f"No attendance recorded for {subject}"}
+        attendance_rows = [{"id": r["id"], "date": r["attendance_date"], "status": r["status"], "morning_status": None, "afternoon_status": None, "remarks": None, "course_code": r["subject"], "course_title": r["subject"]} for r in rows]
+        summary = ", ".join(f"{r['date']}={r['status']}" for r in attendance_rows[:5])
+        return {"status": "ok", "rows": attendance_rows, "message": f"Attendance for {subject or 'all courses'}: {summary}{'...' if len(attendance_rows) > 5 else ''}"}
+    finally:
+        _close_connection(conn)
+
+
+def get_marks(student_id: str, subject: Optional[str] = None) -> Dict[str, Any]:
+    if not student_id:
+        raise ValueError("student_id is required")
+
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM user_accounts_studentdetails WHERE id = %s LIMIT 1",
+                (student_id,),
+            )
+            if cursor.fetchone() is None:
+                return {"status": "not_found", "rows": [], "message": f"I couldn't find student {student_id}"}
+
+            cursor.execute(
+                """
+                SELECT se.id, se.exam_name, se.course_code, se.course_title, se.created_at,
+                       COALESCE(SUM(sm.marks_obtained), 0) AS total_marks,
+                       COALESCE(SUM(sm.max_marks), 0) AS max_marks
+                FROM examination_management_studentexam se
+                LEFT JOIN examination_management_studentmark sm
+                    ON se.id = sm.student_exam_id
+                WHERE se.student_id = %s
+                GROUP BY se.id, se.exam_name, se.course_code, se.course_title, se.created_at
+                ORDER BY se.created_at DESC
+                """,
+                (student_id,),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return {"status": "no_data", "rows": [], "message": f"No marks recorded for student {student_id}"}
+            if subject:
+                normalized = _normalize_subject(subject)
+                rows = [r for r in rows if _normalize_subject(r[2]) == normalized or _normalize_subject(r[3]) == normalized]
+                if not rows:
+                    return {"status": "no_data", "rows": [], "message": f"No marks recorded for {subject}"}
+            marks_rows = [{"exam_id": r[0], "exam_name": r[1], "course_code": r[2], "course_title": r[3], "date": str(r[4]) if r[4] else None, "marks_obtained": r[5] or 0, "max_marks": r[6] or 0, "percentage": (r[5] / r[6] * 100) if r[6] and r[5] else 0} for r in rows]
+            summary = ", ".join(f"{r['exam_name']}={r['marks_obtained']}/{r['max_marks']}" for r in marks_rows[:5])
+            return {"status": "ok", "rows": marks_rows, "message": f"Marks for {subject or 'all courses'}: {summary}{'...' if len(marks_rows) > 5 else ''}"}
+        except mariadb.Error as exc:
+            return {"status": "error", "rows": [], "message": f"Database error while reading marks: {exc}"}
+        finally:
+            _close_connection(conn)
+
+    conn = _sqlite_connect()
+    try:
+        row = conn.execute("SELECT id FROM students WHERE id = ? LIMIT 1", (student_id,)).fetchone()
+        if row is None:
+            return {"status": "not_found", "rows": [], "message": f"I couldn't find student {student_id}"}
+        rows = conn.execute("SELECT id, exam_name, course_code, course_title, date, marks_obtained, max_marks FROM marks WHERE student_id = ? ORDER BY date DESC", (student_id,)).fetchall()
+        if not rows:
+            return {"status": "no_data", "rows": [], "message": f"No marks recorded for student {student_id}"}
+        if subject:
+            normalized = _normalize_subject(subject)
+            rows = [r for r in rows if _normalize_subject(r["course_code"]) == normalized or _normalize_subject(r["course_title"]) == normalized]
+            if not rows:
+                return {"status": "no_data", "rows": [], "message": f"No marks recorded for {subject}"}
+        marks_rows = [{"exam_id": r["id"], "exam_name": r["exam_name"], "course_code": r["course_code"], "course_title": r["course_title"], "date": r["date"], "marks_obtained": r["marks_obtained"], "max_marks": r["max_marks"], "percentage": (r["marks_obtained"] / r["max_marks"] * 100) if r["max_marks"] and r["marks_obtained"] else 0} for r in rows]
+        summary = ", ".join(f"{r['exam_name']}={r['marks_obtained']}/{r['max_marks']}" for r in marks_rows[:5])
+        return {"status": "ok", "rows": marks_rows, "message": f"Marks for {subject or 'all courses'}: {summary}{'...' if len(marks_rows) > 5 else ''}"}
+    finally:
+        _close_connection(conn)
+
+
+def get_timetable(student_id: str, year: Optional[int] = None, semester: Optional[int] = None) -> Dict[str, Any]:
+    if not student_id:
+        raise ValueError("student_id is required")
+
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT year, semester, section FROM user_accounts_studentdetails WHERE id = %s LIMIT 1", (student_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return {"status": "not_found", "rows": [], "message": f"I couldn't find student {student_id}"}
+            student_year, student_semester, student_section = row
+            year = year or student_year
+            semester = semester or student_semester
+
+            cursor.execute(
+                """
+                SELECT id, day, section, year, semester, first_period, second_period, third_period, fourth_period, fifth_period,
+                       sixth_period, seventh_period, eighth_period, nineth_period, tenth_period
+                FROM course_management_periodallocation
+                WHERE year = %s AND semester = %s AND section = %s
+                ORDER BY FIELD(day, 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'), id
+                """,
+                (year, semester, student_section),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return {"status": "no_data", "rows": [], "message": f"No timetable found for {student_id} (Year {year}, Semester {semester})"}
+            timetable_rows = []
+            for row in rows:
+                periods = {"period_1": row[5], "period_2": row[6], "period_3": row[7], "period_4": row[8], "period_5": row[9], "period_6": row[10], "period_7": row[11], "period_8": row[12], "period_9": row[13], "period_10": row[14]}
+                for period_name, course_id in periods.items():
+                    if course_id:
+                        timetable_rows.append({"day": row[1], "section": row[2], "year": row[3], "semester": row[4], "period": period_name, "course_id": course_id})
+            summary = ", ".join(f"{r['day']} Period {r['period'].split('_')[1]}" for r in timetable_rows[:5])
+            return {"status": "ok", "rows": timetable_rows, "message": f"Timetable for {student_id}: {summary}{'...' if len(timetable_rows) > 5 else ''}"}
+        except mariadb.Error as exc:
+            return {"status": "error", "rows": [], "message": f"Database error while reading timetable: {exc}"}
+        finally:
+            _close_connection(conn)
+
+    conn = _sqlite_connect()
+    try:
+        row = conn.execute("SELECT id FROM students WHERE id = ? LIMIT 1", (student_id,)).fetchone()
+        if row is None:
+            return {"status": "not_found", "rows": [], "message": f"I couldn't find student {student_id}"}
+        rows = conn.execute("SELECT id, day, section, year, semester, period, course_id FROM timetable WHERE student_id = ? ORDER BY day", (student_id,)).fetchall()
+        if not rows:
+            return {"status": "no_data", "rows": [], "message": f"No timetable found for {student_id}"}
+        message_parts = [
+            f"{r['day']} Period {r['period'].split('_')[1]}"
+            for r in rows[:5]
+        ]
+        message = f"Timetable for {student_id}: {', '.join(message_parts)}"
+        if len(rows) > 5:
+            message += "..."
+
         return {
             "status": "ok",
-            "rows": row_payloads,
-            "message": f"Timetable for {student_id}: {', '.join(summary_parts)}",
+            "rows": [
+                {
+                    "day": r["day"],
+                    "section": r["section"],
+                    "year": r["year"],
+                    "semester": r["semester"],
+                    "period": r["period"],
+                    "course_id": r["course_id"],
+                }
+                for r in rows
+            ],
+            "message": message,
         }
     finally:
-        conn.close()
+        _close_connection(conn)
 
 
 def mark_attendance(student_id: str, subject: str, date: str, status: str, actor_id: str) -> Dict[str, Any]:
@@ -319,64 +920,101 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
     if not actor_id:
         raise ValueError("actor_id is required")
 
-    normalized_subject = _normalize_subject(subject)
-    if not normalized_subject:
-        raise ValueError("subject is required")
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM user_accounts_studentdetails WHERE id = %s LIMIT 1", (student_id,))
+            if cursor.fetchone() is None:
+                return {"status": "not_found", "message": f"I couldn't find student {student_id}"}
 
-    conn = _connect()
-    try:
-        if not _student_exists(conn, student_id):
-            return {"status": "not_found", "message": f"I couldn't find student {student_id}"}
+            cursor.execute("SELECT id, course_code, title FROM course_management_course WHERE course_code = %s OR LOWER(title) LIKE LOWER(%s) LIMIT 1", (subject, f"%{subject}%"))
+            course_row = cursor.fetchone()
+            if course_row is None:
+                return {"status": "not_found", "message": f"I couldn't find course {subject}"}
+            course_id = course_row[0]
 
-        if not _subject_exists(conn, subject):
-            return {"status": "not_found", "message": f"I couldn't find subject {subject}"}
-
-        existing_row = conn.execute(
-            "SELECT id, status FROM attendance WHERE student_id = ? AND lower(replace(subject, ' ', '')) = ? AND attendance_date = ?",
-            (student_id, normalized_subject, date),
-        ).fetchone()
-
-        if existing_row is not None:
-            if existing_row["status"].lower() == status.lower():
+            cursor.execute("SELECT id, full_day_status FROM student_management_daily_attendance WHERE student_id = %s AND course_id = %s AND date = %s LIMIT 1", (student_id, course_id, date))
+            existing_row = cursor.fetchone()
+            if existing_row and existing_row[1] and existing_row[1].lower() == status.lower():
                 return {"status": "unchanged", "message": f"Attendance already marked as {status}"}
-
-            conn.execute(
-                "UPDATE attendance SET status = ? WHERE id = ?",
-                (status, existing_row["id"]),
-            )
-            conn.execute(
-                "INSERT INTO write_log (actor, action, target, subject, attendance_date, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
-                (actor_id, "mark_attendance", student_id, subject, date, status),
-            )
+            if existing_row:
+                cursor.execute("UPDATE student_management_daily_attendance SET full_day_status = %s WHERE id = %s", (status, existing_row[0]))
+                result_status = "updated"
+            else:
+                cursor.execute("INSERT INTO student_management_daily_attendance (student_id, course_id, date, full_day_status, marked_at) VALUES (%s, %s, %s, %s, NOW())", (student_id, course_id, date, status))
+                result_status = "created"
+            cursor.execute("INSERT INTO voxerp_write_log (actor_id, action, target_student_id, course_id, attendance_date, status, timestamp) VALUES (%s, %s, %s, %s, %s, %s, NOW())", (actor_id, "mark_attendance", student_id, course_id, date, status))
             conn.commit()
-            return {"status": "updated", "message": f"Updated attendance for {student_id} in {subject} on {date} to {status}"}
+            return {"status": result_status, "message": f"{'Updated' if result_status == 'updated' else 'Marked'} attendance for {student_id} in {subject} on {date} as {status}"}
+        except mariadb.Error as exc:
+            if conn is not None:
+                conn.rollback()
+            return {"status": "error", "message": f"Database error while writing attendance: {exc}"}
+        finally:
+            _close_connection(conn)
 
-        conn.execute(
-            "INSERT INTO attendance (student_id, subject, attendance_date, status) VALUES (?, ?, ?, ?)",
-            (student_id, subject, date, status),
-        )
-        conn.execute(
-            "INSERT INTO write_log (actor, action, target, subject, attendance_date, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
-            (actor_id, "mark_attendance", student_id, subject, date, status),
-        )
+    conn = _sqlite_connect()
+    try:
+        row = conn.execute("SELECT id FROM students WHERE id = ? LIMIT 1", (student_id,)).fetchone()
+        if row is None:
+            return {"status": "not_found", "message": f"I couldn't find student {student_id}"}
+        existing = conn.execute("SELECT id, status FROM attendance WHERE student_id = ? AND LOWER(subject) = LOWER(?) AND attendance_date = ? LIMIT 1", (student_id, subject, date)).fetchone()
+        if existing and existing["status"].lower() == status.lower():
+            return {"status": "unchanged", "message": f"Attendance already marked as {status}"}
+        if existing:
+            conn.execute("UPDATE attendance SET status = ? WHERE id = ?", (status, existing["id"]))
+            result_status = "updated"
+        else:
+            conn.execute("INSERT INTO attendance (student_id, subject, attendance_date, status) VALUES (?, ?, ?, ?)", (student_id, subject, date, status))
+            result_status = "created"
+        conn.execute("INSERT INTO write_log (actor, action, target, subject, attendance_date, status) VALUES (?, ?, ?, ?, ?, ?)", (actor_id, "mark_attendance", student_id, subject, date, status))
         conn.commit()
-
-        return {"status": "created", "message": f"Marked attendance for {student_id} in {subject} on {date} as {status}"}
+        return {"status": result_status, "message": f"{'Updated' if result_status == 'updated' else 'Marked'} attendance for {student_id} in {subject} on {date} as {status}"}
     finally:
-        conn.close()
+        _close_connection(conn)
 
 
 def build_schema_map() -> Dict[str, Any]:
-    conn = _connect()
+    if _real_db_enabled():
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            tables = {}
+            for table_name in [
+                "user_accounts_studentdetails",
+                "course_management_course",
+                "course_management_courseenrollment",
+                "student_management_daily_attendance",
+                "examination_management_studentexam",
+                "examination_management_studentmark",
+                "course_management_periodallocation",
+                "course_management_lab_timetable",
+            ]:
+                try:
+                    cursor.execute("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION", (DB_CONFIG["database"], table_name))
+                    tables[table_name] = [row[0] for row in cursor.fetchall()]
+                except mariadb.Error:
+                    pass
+            return {"tables": tables, "description": f"VoxERP schema mapping for {DB_CONFIG['database']} (MariaDB)", "db_host": DB_CONFIG["host"], "db_port": DB_CONFIG["port"], "db_name": DB_CONFIG["database"]}
+        except mariadb.Error as exc:
+            return {"status": "error", "message": f"Failed to build schema map: {exc}"}
+        finally:
+            _close_connection(conn)
+
+    conn = _sqlite_connect()
     try:
         tables = {}
-        for table_name in ["students", "subjects", "attendance", "marks", "timetable", "demo_users", "write_log"]:
-            columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")]
-            tables[table_name] = columns
-
-        return {
-            "tables": tables,
-            "description": "Mock ERP schema for students, subjects, attendance, marks, timetable, demo user selection, and write logging.",
-        }
+        for table_name in ["students", "attendance", "write_log", "courses", "enrollments", "marks", "timetable"]:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            tables[table_name] = [row[1] for row in rows]
+        return {"tables": tables, "description": "VoxERP schema mapping for SQLite mock database", "db_host": "local", "db_port": None, "db_name": _DB_FILE}
     finally:
-        conn.close()
+        _close_connection(conn)
+
+
+def _connect():
+    """Backward-compatible alias for app.py and older callers."""
+    return _get_connection()

@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from db_adapter import _connect
+import db_adapter
 from rag.retriever import retrieve_policy
 
 
@@ -27,6 +27,8 @@ class DataRouter:
 
     def route(self, intent: Dict[str, Any], text: str = "") -> str:
         table = intent.get("table") if isinstance(intent, dict) else None
+        if table == "policy":
+            return "rag"
         if table in self.SQL_TABLES:
             return "sql"
 
@@ -64,6 +66,14 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
 
     if action == "unsupported" or table == "unsupported":
         return {"allowed": False, "reason": "unsupported", "message": "I can't help with that request."}
+
+    if action == "policy_query":
+        if table != "policy":
+            return {"allowed": False, "reason": "invalid_intent", "message": "I couldn't understand that request."}
+        # Policy questions are not protected student data. RAG supplies
+        # knowledge context only; this does not grant access to any SQL
+        # table or student record.
+        return {"allowed": True, "reason": None, "message": None, "target_student_id": None}
 
     if normalized_role == "student":
         target_student_id = _resolve_target_student_id(filters)
@@ -192,41 +202,26 @@ def _resolve_target_student_id(filters: Dict[str, Any]) -> Optional[str]:
 
 
 def _student_id_from_name(name: str) -> Optional[str]:
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT id FROM students WHERE lower(name) = lower(?)",
-            (name,),
-        ).fetchone()
-        return row["id"] if row else None
-    finally:
-        conn.close()
+    result = db_adapter.lookup_student(name=name)
+    if result.get("status") == "ok" and result.get("student"):
+        return result["student"].get("id")
+    return None
 
 
 def _student_class(student_id: str) -> Optional[str]:
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT class_name FROM students WHERE id = ?",
-            (student_id,),
-        ).fetchone()
-        return row["class_name"] if row else None
-    finally:
-        conn.close()
+    result = db_adapter.lookup_student(student_id=student_id)
+    if result.get("status") == "ok" and result.get("student"):
+        return result["student"].get("class_name")
+    return None
 
 
 def _teacher_permitted_class(user_id: str) -> Optional[str]:
-    """Return a class permitted for the teacher, or None if none is assigned."""
+    """Return a verified teacher class, or None when scope is unavailable.
 
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT class_name FROM teacher_classes WHERE teacher_id = ? LIMIT 1",
-            (user_id,),
-        ).fetchone()
-        return row["class_name"] if row else None
-    finally:
-        conn.close()
+    The current MariaDB schema does not define a teacher-to-class mapping,
+    so teacher access must fail closed rather than guessing a class.
+    """
+    return None
 
 
 __all__ = ["authorize_request", "PolicyEngine", "DataRouter", "policy_engine", "data_router"]

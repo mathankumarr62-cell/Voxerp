@@ -15,6 +15,9 @@ from db_adapter import (
 class DbAdapterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        import os
+        if os.path.exists("voxerp.db"):
+            os.remove("voxerp.db")
         initialize_database()
 
     def test_attendance_not_found_for_unknown_student(self):

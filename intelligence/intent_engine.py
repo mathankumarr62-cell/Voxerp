@@ -16,13 +16,21 @@ INTENT_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["read", "write", "unsupported"],
-            "description": "The operation requested by the user.",
+            "enum": ["read", "write", "policy_query", "unsupported"],
+            "description": (
+                "The operation requested by the user. Use 'policy_query' for "
+                "questions about policies, rules, regulations, guidelines, "
+                "syllabus, FAQs, or procedures rather than a specific student's "
+                "ERP data."
+            ),
         },
         "table": {
             "type": "string",
-            "enum": ["attendance", "marks", "timetable", "unsupported"],
-            "description": "The ERP table relevant to the request.",
+            "enum": ["attendance", "marks", "timetable", "policy", "unsupported"],
+            "description": (
+                "The ERP table relevant to the request, or 'policy' when the "
+                "action is 'policy_query'."
+            ),
         },
         "filters": {
             "type": "object",
@@ -203,6 +211,10 @@ READ:
 WRITE:
 - mark attendance
 
+POLICY_QUERY:
+- questions about policies, rules, regulations, guidelines, syllabus,
+  FAQs, or procedures (not a specific student's ERP data)
+
 The current user's role is: {role}
 
 Database schema:
@@ -218,6 +230,7 @@ Classification rules:
 3. Timetable or class-schedule queries belong to the timetable table.
 4. A request to mark a student present or absent is a WRITE operation on attendance.
 5. If the request is unrelated to VoxERP's supported operations, classify it as unsupported.
+17. If the request asks about a policy, rule, regulation, guideline, syllabus, FAQ, or procedure rather than a specific student's data, classify the action as "policy_query" and the table as "policy". Do not extract student_id, student_name, subject, date, or status for policy_query requests.
 6. Extract a student name only when the user explicitly mentions one.
 7. Extract a student ID only when the user explicitly provides one.
 8. Extract the subject exactly as spoken, without inventing a subject.
@@ -242,17 +255,22 @@ Classification rules:
         table = intent.get("table")
         filters = intent.get("filters")
 
-        if action not in {"read", "write", "unsupported"}:
+        if action not in {"read", "write", "policy_query", "unsupported"}:
             return IntentEngine._fallback_intent()
 
         if table not in {
             "attendance",
             "marks",
             "timetable",
+            "policy",
             "unsupported",
         }:
             return IntentEngine._fallback_intent()
 
+        if action == "policy_query" and table != "policy":
+            return IntentEngine._fallback_intent()
+        if action != "policy_query" and table == "policy":
+            return IntentEngine._fallback_intent()
         if not isinstance(filters, dict):
             return IntentEngine._fallback_intent()
 

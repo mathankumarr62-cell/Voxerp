@@ -80,23 +80,16 @@ class OfflineModeIntegrationTests(unittest.TestCase):
         mock_get_marks.assert_not_called()
 
     @patch("db_adapter.mark_attendance")
-    def test_write_flow_confirmation_offline(self, mock_mark):
-        # Query should request confirmation and not call the adapter
+    def test_write_flow_unauthorized_target_denied_offline(self, mock_mark):
+        # Security hardening must deny cross-student writes before confirmation.
         response = self.client.post(
             "/query",
             json={"text": "Mark Vijay absent in DBMS", "user_id": "student-1", "role": "student"},
         )
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
-        self.assertTrue(data.get("requires_confirmation"))
-        mock_mark.assert_not_called()
-
-        # Confirm 'no' should not call adapter
-        no_res = self.client.post(
-            "/confirm",
-            json={"confirm": "no", "pending": data["pending"]},
-        )
-        self.assertEqual(no_res.get_json()["reply_text"], "Okay, no changes made.")
+        self.assertEqual(data["reply_text"], "You can only access your own data.")
+        self.assertFalse(data.get("requires_confirmation", False))
         mock_mark.assert_not_called()
 
     def test_confirm_yes_executes_mark_attendance_offline(self):

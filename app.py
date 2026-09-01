@@ -29,13 +29,12 @@ def index():
 
 @app.route("/users", methods=["GET"])
 def list_users():
-    conn = db_adapter._connect()
     try:
-        rows = conn.execute("SELECT id, role, name FROM demo_users").fetchall()
-        users = [{"id": r["id"], "role": r["role"], "name": r["name"]} for r in rows]
+        users = db_adapter.list_demo_users()
         return jsonify({"users": users})
-    finally:
-        conn.close()
+    except Exception as exc:
+        print(f"/users error: {exc}", flush=True)
+        return jsonify({"users": [], "error": "Unable to load demo users."}), 500
 
 
 @app.route("/query", methods=["POST"])
@@ -59,6 +58,19 @@ def query():
         print("[SERVER LOG] Invoking IntentEngine.parse()...", flush=True)
         intent = intent_engine.parse(text, role, schema_map)
         print(f"[SERVER LOG] IntentEngine parsed result: {intent}", flush=True)
+
+        # A missing subject is a conversational clarification, not a database
+        # operation. Ask for it before authorization.
+        if (
+            intent.get("action") == "write"
+            and intent.get("table") == "attendance"
+            and not (intent.get("filters") or {}).get("subject")
+        ):
+            print(
+                "[SERVER LOG] Write request missing subject. Asking for subject before authorization.",
+                flush=True,
+            )
+            return jsonify({"reply_text": "Which subject should I mark absent?"})
 
         print("[SERVER LOG] Invoking authorize_request()...", flush=True)
         auth_res = authorize_request(user_id=user_id, role=role, intent=intent, text=text)
@@ -162,7 +174,46 @@ def confirm():
         return jsonify({"reply_text": "Okay, no changes made."})
 
     try:
-        print(f"[SERVER LOG] Confirmation explicit 'yes' received. Calling db_adapter.mark_attendance({pending})", flush=True)
+        demo_user = db_adapter.get_demo_user(pending["actor_id"])
+        if not demo_user:
+            return jsonify({"reply_text": "I couldn't verify the current user."}), 403
+
+        confirm_intent = {
+            "action": "write",
+            "table": "attendance",
+            "filters": {
+                "student_id": pending["student_id"],
+                "subject": pending["subject"],
+                "date": pending["date"],
+                "status": pending["status"],
+            },
+        }
+
+        auth_res = authorize_request(
+            pending["actor_id"],
+            demo_user["role"],
+            confirm_intent,
+            f"mark {pending['student_id']} {pending['status']} in {pending['subject']}",
+        )
+
+        if not auth_res.get("allowed"):
+            print(
+                f"[SERVER LOG] Confirmation re-authorization denied: {auth_res}",
+                flush=True,
+            )
+            return jsonify({
+                "reply_text": auth_res.get(
+                    "message",
+                    "You are not authorized to make that change.",
+                )
+            }), 403
+
+        print(
+            f"[SERVER LOG] Confirmation explicitly authorized. "
+            f"Calling db_adapter.mark_attendance({pending})",
+            flush=True,
+        )
+
         result = db_adapter.mark_attendance(
             pending["student_id"],
             pending["subject"],

@@ -51,23 +51,15 @@ class AppIntegrationTests(unittest.TestCase):
         mock_get_marks.assert_not_called()
 
     @patch("db_adapter.mark_attendance")
-    def test_write_flow_requires_confirmation_and_does_not_call_db_adapter_on_query(self, mock_mark):
+    def test_student_write_other_student_denied_without_db_adapter_call(self, mock_mark):
         response = self.client.post(
             "/query",
             json={"text": "Mark Vijay absent in DBMS", "user_id": "student-1", "role": "student"},
         )
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
-        self.assertTrue(data.get("requires_confirmation"))
-        self.assertIn("Mark Vijay absent in DBMS for today", data["reply_text"])
-        mock_mark.assert_not_called()
-
-        # Test confirm "no"
-        no_res = self.client.post(
-            "/confirm",
-            json={"confirm": "no", "pending": data["pending"]},
-        )
-        self.assertEqual(no_res.get_json()["reply_text"], "Okay, no changes made.")
+        self.assertEqual(data["reply_text"], "You can only access your own data.")
+        self.assertFalse(data.get("requires_confirmation", False))
         mock_mark.assert_not_called()
 
     def test_write_flow_without_subject_prompts_for_subject(self):
