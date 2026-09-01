@@ -1,29 +1,37 @@
+import os
 import re
 import datetime
 from flask import Flask, request, jsonify, send_from_directory
+from dotenv import load_dotenv
 import db_adapter
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
 db_adapter.initialize_database()
 
 
-def _all_students():
-    conn = db_adapter._connect()
-    try:
-        rows = conn.execute("SELECT id, name FROM students").fetchall()
-        return [{"id": r["id"], "name": r["name"]} for r in rows]
-    finally:
-        conn.close()
-
-
-STUDENT_DIRECTORY = _all_students()
-
-
 def find_target_student(text_lower):
-    for s in STUDENT_DIRECTORY:
-        if s["name"].lower() in text_lower:
-            return s
+    """
+    Find a student mentioned in text by name.
+    This searches the real database for matching student names.
+    Returns the first match or None.
+    """
+    # Extract potential student names from text
+    # Look for capitalized words that might be names
+    words = text_lower.split()
+
+    for word in words:
+        if len(word) > 2:  # Skip short words
+            result = db_adapter.lookup_student(name=word)
+            if result["status"] == "ok" and result["student"]:
+                return result["student"]
+            # If ambiguous, return first candidate
+            elif result["status"] == "ambiguous" and result.get("candidates"):
+                return result["candidates"][0]
+
     return None
 
 
@@ -91,13 +99,20 @@ def index():
 
 @app.route("/users", methods=["GET"])
 def list_users():
-    conn = db_adapter._connect()
+    """Get list of demo users for the frontend dropdown."""
     try:
-        rows = conn.execute("SELECT id, role, name FROM demo_users").fetchall()
+        conn = db_adapter._connect()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, role, name FROM voxerp_demo_users")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
         users = [{"id": r["id"], "role": r["role"], "name": r["name"]} for r in rows]
         return jsonify({"users": users})
-    finally:
-        conn.close()
+    except Exception as e:
+        print(f"Error fetching users: {e}")
+        return jsonify({"error": "Failed to fetch users"}), 500
 
 
 @app.route("/query", methods=["POST"])
