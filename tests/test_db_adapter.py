@@ -1,7 +1,10 @@
+import os
 import sqlite3
+import tempfile
 import unittest
 import warnings
 
+import db_adapter
 from db_adapter import (
     build_schema_map,
     get_attendance,
@@ -12,10 +15,34 @@ from db_adapter import (
 )
 
 
+@unittest.skipUnless(str(os.getenv("VOXERP_USE_REAL_DB", "False")).lower() in {"0", "false", "no", "off", ""}, "SQLite mock-mode unit tests")
 class DbAdapterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls._original_db_file = db_adapter._DB_FILE
+        temp_db = tempfile.NamedTemporaryFile(prefix="voxerp-test-", suffix=".db", delete=False)
+        cls._test_db_file = temp_db.name
+        temp_db.close()
+        os.unlink(cls._test_db_file)
+        db_adapter._DB_FILE = cls._test_db_file
         initialize_database()
+
+    def setUp(self):
+        conn = sqlite3.connect(self._test_db_file)
+        try:
+            conn.execute(
+                "DELETE FROM attendance WHERE student_id = ? AND subject = ? AND attendance_date = ?",
+                ("student-1", "DBMS", "2026-08-20"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @classmethod
+    def tearDownClass(cls):
+        db_adapter._DB_FILE = cls._original_db_file
+        if os.path.exists(cls._test_db_file):
+            os.unlink(cls._test_db_file)
 
     def test_attendance_not_found_for_unknown_student(self):
         result = get_attendance("student-404", "dbms")
@@ -33,7 +60,7 @@ class DbAdapterTests(unittest.TestCase):
         self.assertGreaterEqual(len(result["rows"]), 1)
 
     def test_initialize_database_preserves_existing_data(self):
-        conn = sqlite3.connect("voxerp.db")
+        conn = sqlite3.connect(db_adapter._DB_FILE)
         try:
             conn.execute(
                 "INSERT OR IGNORE INTO students (id, name, role, class_name) VALUES (?, ?, ?, ?)",
@@ -45,7 +72,7 @@ class DbAdapterTests(unittest.TestCase):
 
         initialize_database()
 
-        conn = sqlite3.connect("voxerp.db")
+        conn = sqlite3.connect(db_adapter._DB_FILE)
         try:
             row = conn.execute(
                 "SELECT name FROM students WHERE id = ?",
@@ -76,7 +103,7 @@ class DbAdapterTests(unittest.TestCase):
         duplicate = mark_attendance("student-1", "dbms", date, "present", "teacher-1")
         self.assertEqual(duplicate["status"], "unchanged")
 
-        conn = sqlite3.connect("voxerp.db")
+        conn = sqlite3.connect(db_adapter._DB_FILE)
         try:
             row_count = conn.execute(
                 "SELECT COUNT(*) FROM attendance WHERE student_id = ? AND attendance_date = ? AND lower(replace(subject, ' ', '')) = ?",
@@ -99,7 +126,7 @@ class DbAdapterTests(unittest.TestCase):
 
         self.assertEqual(updated["status"], "updated")
 
-        conn = sqlite3.connect("voxerp.db")
+        conn = sqlite3.connect(db_adapter._DB_FILE)
         try:
             rows = conn.execute(
                 "SELECT status FROM attendance WHERE student_id = ? AND attendance_date = ? AND lower(replace(subject, ' ', '')) = ?",
@@ -120,7 +147,7 @@ class DbAdapterTests(unittest.TestCase):
         date = "2026-08-22"
         mark_attendance("student-1", "DBMS", date, "present", "teacher-1")
 
-        conn = sqlite3.connect("voxerp.db")
+        conn = sqlite3.connect(db_adapter._DB_FILE)
         try:
             row = conn.execute(
                 "SELECT actor, target FROM write_log WHERE target = ? AND attendance_date = ? ORDER BY id DESC LIMIT 1",
@@ -136,7 +163,7 @@ class DbAdapterTests(unittest.TestCase):
         date = "2026-08-23"
         mark_attendance("student-1", "DBMS", date, "absent", "teacher-1")
 
-        conn = sqlite3.connect("voxerp.db")
+        conn = sqlite3.connect(db_adapter._DB_FILE)
         try:
             row = conn.execute(
                 "SELECT subject, attendance_date, status FROM write_log WHERE target = ? AND action = 'mark_attendance' AND attendance_date = ? ORDER BY id DESC LIMIT 1",
