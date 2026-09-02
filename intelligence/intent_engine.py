@@ -453,6 +453,27 @@ Classification rules:
                 if sanitized_subject:
                     guarded_filters["subject"] = sanitized_subject
 
+        # Also support natural self-reference commands such as:
+        #   Mark my DBMS absent
+        #   Mark me DBMS absent
+        # The subject is taken only from the text immediately before
+        # the explicit attendance status.
+        if not guarded_filters.get("subject"):
+            self_subject_match = re.search(
+                r"\b(?:mark|record|set|update)"
+                r"\s+(?:my|me|myself)\s+"
+                r"([A-Za-z][A-Za-z0-9&._-]*)\s+"
+                r"(?:present|absent)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            if self_subject_match:
+                candidate_subject = self_subject_match.group(1)
+                sanitized_subject = IntentEngine._sanitize_subject(candidate_subject)
+                if sanitized_subject:
+                    guarded_filters["subject"] = sanitized_subject
+
         return {
             "action": "write",
             "table": "attendance",
