@@ -109,6 +109,101 @@ def _course_record_to_dict(row) -> Optional[Dict[str, Any]]:
     }
 
 
+
+def _sqlite_migrate_schema(conn: sqlite3.Connection) -> None:
+    required_columns = {
+        "students": {
+            "name": "TEXT",
+            "reg_no": "TEXT",
+            "batch": "TEXT",
+            "year": "INTEGER",
+            "semester": "INTEGER",
+            "section": "TEXT",
+            "email": "TEXT",
+            "department_id": "INTEGER",
+            "role": "TEXT",
+            "class_name": "TEXT",
+        },
+        "attendance": {
+            "student_id": "TEXT",
+            "subject": "TEXT",
+            "attendance_date": "TEXT",
+            "status": "TEXT",
+        },
+        "write_log": {
+            "actor": "TEXT",
+            "action": "TEXT",
+            "target": "TEXT",
+            "subject": "TEXT",
+            "attendance_date": "TEXT",
+            "status": "TEXT",
+        },
+        "courses": {
+            "course_code": "TEXT",
+            "title": "TEXT",
+            "year": "INTEGER",
+            "semester": "INTEGER",
+            "department_id": "INTEGER",
+        },
+        "enrollments": {
+            "student_id": "TEXT",
+            "course_id": "INTEGER",
+            "enrollment_date": "TEXT",
+            "course_code": "TEXT",
+            "course_title": "TEXT",
+            "year": "INTEGER",
+            "semester": "INTEGER",
+        },
+        "timetable": {
+            "student_id": "TEXT",
+            "day": "TEXT",
+            "section": "TEXT",
+            "year": "INTEGER",
+            "semester": "INTEGER",
+            "period": "TEXT",
+            "course_id": "INTEGER",
+        },
+        "marks": {
+            "student_id": "TEXT",
+            "exam_name": "TEXT",
+            "course_code": "TEXT",
+            "course_title": "TEXT",
+            "date": "TEXT",
+            "marks_obtained": "INTEGER",
+            "max_marks": "INTEGER",
+        },
+    }
+
+    for table_name, columns in required_columns.items():
+        existing_columns = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")
+        }
+        for column_name, column_type in columns.items():
+            if column_name not in existing_columns:
+                conn.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+                )
+
+    marks_columns = {row[1] for row in conn.execute("PRAGMA table_info(marks)")}
+    if {"course_code", "subject"}.issubset(marks_columns):
+        conn.execute(
+            "UPDATE marks SET course_code = subject WHERE course_code IS NULL AND subject IS NOT NULL"
+        )
+    if {"marks_obtained", "score"}.issubset(marks_columns):
+        conn.execute(
+            "UPDATE marks SET marks_obtained = score WHERE marks_obtained IS NULL AND score IS NOT NULL"
+        )
+    if {"max_marks", "marks_obtained"}.issubset(marks_columns):
+        conn.execute(
+            "UPDATE marks SET max_marks = 100 WHERE max_marks IS NULL AND marks_obtained IS NOT NULL"
+        )
+
+    timetable_columns = {row[1] for row in conn.execute("PRAGMA table_info(timetable)")}
+    if {"period", "slot"}.issubset(timetable_columns):
+        conn.execute(
+            "UPDATE timetable SET period = slot WHERE period IS NULL AND slot IS NOT NULL"
+        )
+
 def _sqlite_seed() -> None:
     conn = _sqlite_connect()
     try:
@@ -209,6 +304,8 @@ def _sqlite_seed() -> None:
             )
             """
         )
+
+        _sqlite_migrate_schema(conn)
 
         conn.execute(
             """
@@ -866,7 +963,7 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
                 for period_name, course_id in periods.items():
                     if course_id:
                         timetable_rows.append({"day": row[1], "section": row[2], "year": row[3], "semester": row[4], "period": period_name, "course_id": course_id})
-            summary = ", ".join(f"{r['day']} Period {r['period'].split('_')[1]}" for r in timetable_rows[:5])
+            summary = ", ".join(f"{r['day']} Period {r['period'].split('_', 1)[1] if '_' in r['period'] else r['period']}" for r in timetable_rows[:5])
             return {"status": "ok", "rows": timetable_rows, "message": f"Timetable for {student_id}: {summary}{'...' if len(timetable_rows) > 5 else ''}"}
         except mariadb.Error as exc:
             return {"status": "error", "rows": [], "message": f"Database error while reading timetable: {exc}"}
@@ -882,7 +979,7 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
         if not rows:
             return {"status": "no_data", "rows": [], "message": f"No timetable found for {student_id}"}
         message_parts = [
-            f"{r['day']} Period {r['period'].split('_')[1]}"
+            f"{r['day']} Period {r['period'].split('_', 1)[1] if '_' in r['period'] else r['period']}"
             for r in rows[:5]
         ]
         message = f"Timetable for {student_id}: {', '.join(message_parts)}"
@@ -969,7 +1066,11 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
         else:
             conn.execute("INSERT INTO attendance (student_id, subject, attendance_date, status) VALUES (?, ?, ?, ?)", (student_id, subject, date, status))
             result_status = "created"
-        conn.execute("INSERT INTO write_log (actor, action, target, subject, attendance_date, status) VALUES (?, ?, ?, ?, ?, ?)", (actor_id, "mark_attendance", student_id, subject, date, status))
+        write_log_columns = {row[1] for row in conn.execute("PRAGMA table_info(write_log)")}
+        if "timestamp" in write_log_columns:
+            conn.execute("INSERT INTO write_log (actor, action, target, subject, attendance_date, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", (actor_id, "mark_attendance", student_id, subject, date, status))
+        else:
+            conn.execute("INSERT INTO write_log (actor, action, target, subject, attendance_date, status) VALUES (?, ?, ?, ?, ?, ?)", (actor_id, "mark_attendance", student_id, subject, date, status))
         conn.commit()
         return {"status": result_status, "message": f"{'Updated' if result_status == 'updated' else 'Marked'} attendance for {student_id} in {subject} on {date} as {status}"}
     finally:
