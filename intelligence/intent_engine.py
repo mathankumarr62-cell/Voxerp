@@ -487,6 +487,35 @@ Classification rules:
             # Use existing deterministic guard to extract name/subject/status.
             return IntentEngine._apply_write_safety_guard(text, {"action": "write", "table": "attendance", "filters": {}})
 
+        # Policy questions must be routed to RAG before generic
+        # attendance/marks/timetable keyword detection.
+        policy_terms = (
+            "policy",
+            "policies",
+            "rule",
+            "rules",
+            "regulation",
+            "regulations",
+            "guideline",
+            "guidelines",
+            "syllabus",
+            "faq",
+            "procedure",
+            "procedures",
+        )
+        if any(term in lowered_l for term in policy_terms):
+            return IntentEngine._validate_intent({
+                "action": "policy_query",
+                "table": "policy",
+                "filters": {
+                    "student_id": None,
+                    "student_name": None,
+                    "subject": None,
+                    "date": None,
+                    "status": None,
+                },
+            })
+
         # Timetable
         if "timetable" in lowered_l or "schedule" in lowered_l or "class schedule" in lowered_l:
             student_name = IntentEngine._offline_extract_student_name(text)

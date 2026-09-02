@@ -7,6 +7,10 @@ def generate_response(result: Dict[str, Any]) -> str:
     if not isinstance(result, dict):
         return "I couldn't understand that response."
 
+    policy_context = result.get("policy_context")
+    if isinstance(policy_context, str) and policy_context.strip():
+        return policy_context.strip()
+
     status = result.get("status")
     message = result.get("message") or ""
 
