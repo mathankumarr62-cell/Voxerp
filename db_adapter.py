@@ -68,8 +68,10 @@ def _get_connection():
 
     try:
         return mariadb.connect(**DB_CONFIG)
-    except mariadb.Error as exc:
-        raise RuntimeError(f"Failed to connect to MariaDB: {exc}") from exc
+    except mariadb.Error:
+        # Keep connection failures within the adapter's MariaDB error handlers.
+        # Do not expose connector authentication/configuration details.
+        raise mariadb.OperationalError("Failed to connect to MariaDB") from None
 
 
 def _normalize_subject(subject: Optional[str]) -> Optional[str]:
@@ -657,6 +659,7 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
     if _real_db_enabled():
         owns_connection = connection is None
         conn = connection
+        cursor = None
 
         try:
             if owns_connection:
@@ -778,8 +781,12 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
             }
 
         finally:
-            if owns_connection:
-                _close_connection(conn)
+            try:
+                if cursor is not None:
+                    cursor.close()
+            finally:
+                if owns_connection:
+                    _close_connection(conn)
 
     conn = _sqlite_connect()
 
@@ -886,23 +893,6 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
     finally:
         _close_connection(conn)
 
-    conn = _sqlite_connect()
-    try:
-        row = conn.execute("SELECT id FROM students WHERE id = ? LIMIT 1", (student_id,)).fetchone()
-        if row is None:
-            return {"status": "not_found", "rows": [], "message": f"I couldn't find student {student_id}"}
-        rows = conn.execute("SELECT id, attendance_date, status, subject FROM attendance WHERE student_id = ? ORDER BY attendance_date DESC", (student_id,)).fetchall()
-        if not rows:
-            return {"status": "no_data", "rows": [], "message": f"No attendance recorded for student {student_id}"}
-        if subject:
-            rows = [r for r in rows if _normalize_subject(r["subject"]) == _normalize_subject(subject)]
-            if not rows:
-                return {"status": "no_data", "rows": [], "message": f"No attendance recorded for {subject}"}
-        attendance_rows = [{"id": r["id"], "date": r["attendance_date"], "status": r["status"], "morning_status": None, "afternoon_status": None, "remarks": None, "course_code": r["subject"], "course_title": r["subject"]} for r in rows]
-        summary = ", ".join(f"{r['date']}={r['status']}" for r in attendance_rows[:5])
-        return {"status": "ok", "rows": attendance_rows, "message": f"Attendance for {subject or 'all courses'}: {summary}{'...' if len(attendance_rows) > 5 else ''}"}
-    finally:
-        _close_connection(conn)
 
 
 def get_marks(student_id: str, subject: Optional[str] = None) -> Dict[str, Any]:
@@ -1226,7 +1216,11 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
             summary = ", ".join(f"{r['day']} Period {r['period'].split('_')[1]}" for r in timetable_rows[:5])
             return {"status": "ok", "rows": timetable_rows, "message": f"Timetable for {student_id}: {summary}{'...' if len(timetable_rows) > 5 else ''}"}
         except mariadb.Error as exc:
-            return {"status": "error", "rows": [], "message": f"Database error while reading timetable: {exc}"}
+            return {
+                "status": "error",
+                "rows": [],
+                "message": f"Database error while reading timetable: {exc}",
+            }
         finally:
             _close_connection(conn)
 
@@ -1260,6 +1254,7 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
     if _real_db_enabled():
         conn = connection
         owns_connection = connection is None
+        cursor = None
 
         try:
             if conn is None:
@@ -1376,7 +1371,7 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
                 result_status = "created"
 
             if owns_connection:
-                 conn.commit()
+                conn.commit()
 
             return {
                 "status": result_status,
@@ -1393,8 +1388,12 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
             }
 
         finally:
-            if owns_connection:
-                _close_connection(conn)
+            try:
+                if cursor is not None:
+                    cursor.close()
+            finally:
+                if owns_connection:
+                    _close_connection(conn)
 
     conn = _sqlite_connect()
 
