@@ -756,17 +756,21 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
                     ha.id,
                     ha.date,
                     ha.status,
-                    NULL,
-                    NULL,
-                    ha.remarks,
+
+                    ha.period,
+                    ha.academic_year,
+                    ha.batch,
+                    ha.section,
+                    ha.semester,
+                    ha.year,
+                    ha.course_id,
                     c.course_code,
-                    c.title,
-                    ha.period
+                    c.title
                 FROM student_management_hourattendance ha
-                LEFT JOIN course_management_course c
-                    ON ha.course_id = c.id
+                INNER JOIN course_management_course c ON ha.course_id = c.id
                 WHERE ha.student_id = %s
-                ORDER BY ha.date DESC, ha.id DESC
+                ORDER BY ha.date DESC, ha.period ASC
+
                 """,
                 (student_id,),
             )
@@ -781,50 +785,39 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
                 ]
 
             if not rows:
-                message = (
-                    f"No attendance recorded for {subject}"
-                    if subject
-                    else f"No attendance recorded for student {student_id}"
-                )
-                return {
-                    "status": "no_data",
-                    "rows": [],
-                    "message": message,
-                }
 
+                return {"status": "no_data", "rows": [], "message": f"No attendance recorded for student {student_id}"}
+            if subject:
+                normalized = _normalize_subject(subject)
+                rows = [r for r in rows if _normalize_subject(r[10]) == normalized or _normalize_subject(r[11]) == normalized]
+                if not rows:
+                    return {"status": "no_data", "rows": [], "message": f"No attendance recorded for {subject}"}
 
             attendance_rows = [
                 {
                     "id": r[0],
                     "date": str(r[1]) if r[1] else None,
                     "status": r[2] or "unmarked",
-                    "morning_status": r[3],
-                    "afternoon_status": r[4],
-                    "remarks": r[5],
-                    "course_code": r[6],
-                    "course_title": r[7],
-                    "period": r[8],
+
+                    "morning_status": None,
+                    "afternoon_status": None,
+                    "remarks": None,
+                    "course_code": r[10],
+                    "course_title": r[11],
+                    "period": r[3],
+                    "academic_year": r[4],
+                    "batch": r[5],
+                    "section": r[6],
+                    "semester": r[7],
+                    "year": r[8],
+                    "course_id": r[9],
                 }
                 for r in rows
             ]
-
-            summary = ", ".join(
-                f"{r['date']}={r['status']}"
-                for r in attendance_rows[:5]
-            )
-
-            return {
-                "status": "ok",
-                "rows": attendance_rows,
-                "message": f"Attendance for {subject or 'all courses'}: {summary}{'...' if len(attendance_rows) > 5 else ''}",
-            }
-
-        except mariadb.Error:
-            return {
-                "status": "error",
-                "rows": [],
-                "message": "Database error while reading attendance",
-            }
+            summary = ", ".join(f"{r['date']}={r['status']}" for r in attendance_rows[:5])
+            return {"status": "ok", "rows": attendance_rows, "message": f"Attendance for {subject or 'all courses'}: {summary}{'...' if len(attendance_rows) > 5 else ''}"}
+        except mariadb.Error as exc:
+            return {"status": "error", "rows": [], "message": f"Database error while reading attendance: {exc}"}
 
         finally:
             try:
@@ -973,7 +966,9 @@ def get_marks(student_id: str, subject: Optional[str] = None) -> Dict[str, Any]:
                 """
                 SELECT
                     o.id,
-                    o.created_at,
+
+                    o.student_id,
+
                     o.course_id,
                     c.course_code,
                     c.title,
@@ -985,11 +980,14 @@ def get_marks(student_id: str, subject: Optional[str] = None) -> Dict[str, Any]:
                     o.activity_actual_mark,
                     o.practical_assessment,
                     o.practical_max_mark,
-                    o.practical_actual_mark
+
+                    o.practical_actual_mark,
+                    o.created_at
                 FROM examination_management_overallconsolidaterecord o
                 INNER JOIN course_management_course c
-                    ON o.course_id = c.id
-                WHERE o.student_id=%s
+                    ON c.id = o.course_id
+                WHERE o.student_id = %s
+
                 ORDER BY o.created_at DESC, o.id DESC
                 """,
                 (student_id,),
@@ -1001,190 +999,128 @@ def get_marks(student_id: str, subject: Optional[str] = None) -> Dict[str, Any]:
                 return {
                     "status": "no_data",
                     "rows": [],
-                    "message": "No marks found for this student",
+
+                    "message": f"No marks recorded for student {student_id}",
                 }
 
-            if subject:
-                normalized_subject = _normalize_subject(subject)
-
-                source_rows = [
-                    row
-                    for row in source_rows
-                    if _normalize_subject(row[3]) == normalized_subject
-                    or _normalize_subject(row[4]) == normalized_subject
-                ]
-
-                if not source_rows:
-                    return {
-                        "status": "no_data",
-                        "rows": [],
-                        "message": "No marks found for the requested subject",
-                    }
-
-            def parse_number(value):
+            def split_values(value):
                 if value is None:
-                    return None
-
-                text = str(value).strip()
-
-                if not text:
-                    return None
-
-                try:
-                    number = float(text)
-
-                    if number.is_integer():
-                        return int(number)
-
-                    return number
-                except (TypeError, ValueError):
-                    return None
-
-            def parse_assessments(
-                record_id,
-                created_at,
-                course_code,
-                course_title,
-                assessment_text,
-                max_text,
-                actual_text,
-            ):
-                if not assessment_text:
                     return []
-
-                names = [
-                    item.strip()
-                    for item in str(assessment_text).split(",")
-                    if item.strip()
-                ]
-
-                max_values = (
-                    [item.strip() for item in str(max_text).split(",")]
-                    if max_text
-                    else []
-                )
-
-                actual_values = (
-                    [item.strip() for item in str(actual_text).split(",")]
-                    if actual_text
-                    else []
-                )
-
-                parsed = []
-
-                for index, assessment_name in enumerate(names):
-                    if index >= len(max_values):
-                        continue
-
-                    if index >= len(actual_values):
-                        continue
-
-                    max_marks = parse_number(max_values[index])
-                    marks_obtained = parse_number(actual_values[index])
-
-                    if max_marks is None or marks_obtained is None:
-                        continue
-
-                    percentage = None
-
-                    if max_marks > 0:
-                        percentage = (marks_obtained / max_marks) * 100
-
-                    parsed.append(
-                        {
-                            "exam_id": record_id,
-                            "exam_name": assessment_name,
-                            "course_code": course_code,
-                            "course_title": course_title,
-                            "date": str(created_at) if created_at else None,
-                            "marks_obtained": marks_obtained,
-                            "max_marks": max_marks,
-                            "percentage": percentage,
-                        }
-                    )
-
-                return parsed
+                return [item.strip() for item in str(value).split(",")]
 
             marks_rows = []
 
-            for row in source_rows:
+            for r in source_rows:
                 (
                     record_id,
-                    created_at,
-                    course_id,
+                    _student_id,
+                    _course_id,
                     course_code,
                     course_title,
                     theory_assessment,
-                    theory_max,
-                    theory_actual,
+                    theory_max_mark,
+                    theory_actual_mark,
                     activity_assessment,
-                    activity_max,
-                    activity_actual,
+                    activity_max_mark,
+                    activity_actual_mark,
                     practical_assessment,
-                    practical_max,
-                    practical_actual,
-                ) = row
+                    practical_max_mark,
+                    practical_actual_mark,
+                    created_at,
+                ) = r
 
-                marks_rows.extend(
-                    parse_assessments(
-                        record_id,
-                        created_at,
-                        course_code,
-                        course_title,
-                        theory_assessment,
-                        theory_max,
-                        theory_actual,
-                    )
-                )
+                assessment_groups = [
+                    (
+                        split_values(theory_assessment),
+                        split_values(theory_max_mark),
+                        split_values(theory_actual_mark),
+                    ),
+                    (
+                        split_values(activity_assessment),
+                        split_values(activity_max_mark),
+                        split_values(activity_actual_mark),
+                    ),
+                    (
+                        split_values(practical_assessment),
+                        split_values(practical_max_mark),
+                        split_values(practical_actual_mark),
+                    ),
+                ]
 
-                marks_rows.extend(
-                    parse_assessments(
-                        record_id,
-                        created_at,
-                        course_code,
-                        course_title,
-                        activity_assessment,
-                        activity_max,
-                        activity_actual,
-                    )
-                )
+                for assessments, max_marks, actual_marks in assessment_groups:
+                    for index, assessment_name in enumerate(assessments):
+                        if not assessment_name:
+                            continue
 
-                marks_rows.extend(
-                    parse_assessments(
-                        record_id,
-                        created_at,
-                        course_code,
-                        course_title,
-                        practical_assessment,
-                        practical_max,
-                        practical_actual,
-                    )
-                )
+                        max_mark = max_marks[index] if index < len(max_marks) else None
+                        actual_mark = actual_marks[index] if index < len(actual_marks) else None
+
+                        if actual_mark in (None, "", "NULL"):
+                            continue
+
+                        try:
+                            actual = float(actual_mark)
+                            maximum = float(max_mark) if max_mark not in (None, "") else 0
+                        except (TypeError, ValueError):
+                            continue
+
+                        percentage = (actual / maximum * 100) if maximum else 0
+
+                        marks_rows.append(
+                            {
+                                "exam_id": record_id,
+                                "exam_name": assessment_name,
+                                "course_code": course_code,
+                                "course_title": course_title,
+                                "date": str(created_at) if created_at else None,
+                                "marks_obtained": actual,
+                                "max_marks": maximum,
+                                "percentage": percentage,
+                            }
+                        )
+
+            if subject:
+                normalized = _normalize_subject(subject)
+                marks_rows = [
+                    r for r in marks_rows
+                    if _normalize_subject(r["course_code"]) == normalized
+                    or _normalize_subject(r["course_title"]) == normalized
+                ]
+
+                if not marks_rows:
+                    return {
+                        "status": "no_data",
+                        "rows": [],
+                        "message": f"No marks recorded for {subject}",
+                    }
+
 
             if not marks_rows:
                 return {
                     "status": "no_data",
                     "rows": [],
-                    "message": "No valid assessment marks found for this student",
+
+                    "message": f"No marks recorded for student {student_id}",
                 }
 
-            summary_parts = [
-                f"{row['course_code']} {row['exam_name']}: "
-                f"{row['marks_obtained']}/{row['max_marks']}"
-                for row in marks_rows
-            ]
+            summary = ", ".join(
+                f"{r['exam_name']}={r['marks_obtained']}/{r['max_marks']}"
+                for r in marks_rows[:5]
+            )
+
 
             return {
                 "status": "ok",
                 "rows": marks_rows,
-                "message": ", ".join(summary_parts),
+
+                "message": f"Marks for {subject or 'all courses'}: {summary}{'...' if len(marks_rows) > 5 else ''}",
             }
 
-        except mariadb.Error:
+        except mariadb.Error as exc:
             return {
                 "status": "error",
                 "rows": [],
-                "message": "Database error",
+                "message": f"Database error while reading marks: {exc}",
             }
 
         finally:
@@ -1258,41 +1194,57 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
                 }
 
             timetable_rows = []
-            for allocation in allocations:
-                for period_number, course_code in enumerate(allocation[5:15], start=1):
+
+            course_cache = {}
+            for row in rows:
+                periods = {
+                    "period_1": row[5],
+                    "period_2": row[6],
+                    "period_3": row[7],
+                    "period_4": row[8],
+                    "period_5": row[9],
+                    "period_6": row[10],
+                    "period_7": row[11],
+                    "period_8": row[12],
+                    "period_9": row[13],
+                    "period_10": row[14],
+                }
+                for period_name, course_code in periods.items():
                     if not course_code:
                         continue
-                    cursor.execute(
-                        "SELECT id, course_code, title FROM course_management_course WHERE course_code = %s LIMIT 1",
-                        (course_code,),
-                    )
-                    course = cursor.fetchone()
-                    timetable_rows.append({
-                        "day": allocation[1],
-                        "section": allocation[2],
-                        "year": allocation[3],
-                        "semester": allocation[4],
-                        "period": f"period_{period_number}",
-                        "course_id": course[0] if course else None,
-                        "course_code": course[1] if course else course_code,
-                        "course_title": course[2] if course else None,
-                    })
 
-            summary = ", ".join(
-                f"{row['day']} Period {row['period'].split('_')[1]}"
-                for row in timetable_rows[:5]
-            )
-            return {
-                "status": "ok",
-                "rows": timetable_rows,
-                "message": f"Timetable for {student_id}: {summary}{'...' if len(timetable_rows) > 5 else ''}",
-            }
-        except mariadb.Error:
-            return {
-                "status": "error",
-                "rows": [],
-                "message": "Database error while reading timetable",
-            }
+                    course_code = str(course_code).strip()
+                    if course_code not in course_cache:
+                        cursor.execute(
+                            """
+                            SELECT id, course_code, title
+                            FROM course_management_course
+                            WHERE course_code = %s
+                            ORDER BY id
+                            LIMIT 1
+                            """,
+                            (course_code,),
+                        )
+                        course_cache[course_code] = cursor.fetchone()
+
+                    course = course_cache[course_code]
+                    timetable_rows.append(
+                        {
+                            "day": row[1],
+                            "section": row[2],
+                            "year": row[3],
+                            "semester": row[4],
+                            "period": period_name,
+                            "course_id": course[0] if course else None,
+                            "course_code": course[1] if course else course_code,
+                            "course_title": course[2] if course else None,
+                        }
+                    )
+            summary = ", ".join(f"{r['day']} Period {r['period'].split('_', 1)[1] if '_' in r['period'] else r['period']}" for r in timetable_rows[:5])
+            return {"status": "ok", "rows": timetable_rows, "message": f"Timetable for {student_id}: {summary}{'...' if len(timetable_rows) > 5 else ''}"}
+        except mariadb.Error as exc:
+            return {"status": "error", "rows": [], "message": f"Database error while reading timetable: {exc}"}
+
         finally:
             _close_connection(conn)
 
@@ -1333,17 +1285,14 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
         return {"status": "invalid", "message": "status must be present, absent, or on duty"}
 
     if _real_db_enabled():
-        # Real writes are explicitly opt-in. When disabled, do not connect
-        # to the real ERP database from this write path.
-        if not _real_writes_enabled():
+
+        if not _as_bool(os.getenv("VOXERP_ALLOW_REAL_WRITES"), default=False):
             return {
-                "status": "disabled",
-                "message": "Real database writes are disabled"
+                "status": "forbidden",
+                "message": "Real database writes are disabled."
             }
 
-        conn = connection
-        owns_connection = connection is None
-        cursor = None
+        conn = None
 
         try:
             if conn is None:
