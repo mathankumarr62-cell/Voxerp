@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from datetime import date as calendar_date
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
@@ -59,6 +60,14 @@ def _close_connection(conn) -> None:
         try:
             conn.close()
         except Exception:
+            pass
+
+
+def _close_cursor(cursor) -> None:
+    if cursor is not None:
+        try:
+            cursor.close()
+        except (mariadb.Error, sqlite3.Error):
             pass
 
 
@@ -362,11 +371,8 @@ def check_connection() -> bool:
         cursor.execute("SELECT 1")
         cursor.fetchone()
         return True
-    except Exception as exc:
-        msg = str(exc)
-        if "password" in msg.lower() or "auth" in msg.lower() or "access denied" in msg.lower():
-            msg = "database authentication failed"
-        print(f"Database connection test failed: {msg}")
+    except Exception:
+        print("Database connection test failed")
         return False
     finally:
         _close_connection(conn)
@@ -379,6 +385,8 @@ def test_connection() -> bool:
 
 def initialize_database() -> Dict[str, Any]:
     if _real_db_enabled():
+        if not _real_writes_enabled():
+            return {"status": "disabled", "message": "Real database writes are disabled"}
         conn = None
         try:
             conn = _get_connection()
@@ -422,8 +430,8 @@ def initialize_database() -> Dict[str, Any]:
                 )
             conn.commit()
             return {"status": "ok", "message": "Database initialized successfully"}
-        except mariadb.Error as exc:
-            return {"status": "error", "message": f"Failed to initialize database: {exc}"}
+        except mariadb.Error:
+            return {"status": "error", "message": "Failed to initialize database"}
         finally:
             _close_connection(conn)
 
@@ -489,8 +497,8 @@ def lookup_student(student_id: Optional[str] = None, name: Optional[str] = None,
             if len(rows) > 1:
                 return {"status": "ambiguous", "student": None, "candidates": [_student_record_to_dict(r) for r in rows], "message": f"Found {len(rows)} students matching '{name}': {', '.join(r[1] for r in rows[:5])}. Please be more specific."}
             return {"status": "not_found", "student": None, "message": f"I couldn't find a student named {name}"}
-        except mariadb.Error as exc:
-            return {"status": "error", "student": None, "message": f"Database error while looking up student: {exc}"}
+        except mariadb.Error:
+            return {"status": "error", "student": None, "message": "Database error while looking up student"}
         finally:
             _close_connection(conn)
 
@@ -548,6 +556,8 @@ def resolve_student_name(student_id: str) -> Optional[str]:
 def lookup_course(course_code: Optional[str] = None, title: Optional[str] = None) -> Dict[str, Any]:
     if not any([course_code, title]):
         raise ValueError("course_code or title is required")
+    if course_code is not None:
+        course_code = str(course_code).strip()
 
     if _real_db_enabled():
         conn = None
@@ -577,8 +587,8 @@ def lookup_course(course_code: Optional[str] = None, title: Optional[str] = None
             if len(rows) > 1:
                 return {"status": "ambiguous", "course": None, "message": f"Found {len(rows)} courses containing '{title}'"}
             return {"status": "not_found", "course": None, "message": f"I couldn't find a course titled {title}"}
-        except mariadb.Error as exc:
-            return {"status": "error", "course": None, "message": f"Database error while looking up course: {exc}"}
+        except mariadb.Error:
+            return {"status": "error", "course": None, "message": "Database error while looking up course"}
         finally:
             _close_connection(conn)
 
@@ -634,8 +644,8 @@ def get_enrollment(student_id: str) -> Dict[str, Any]:
                 return {"status": "no_data", "enrollments": [], "message": f"No course enrollments found for student {student_id}"}
             enrollments = [{"enrollment_id": r[0], "course_id": r[1], "enrollment_date": str(r[2]) if r[2] else None, "course_code": r[3], "course_title": r[4], "year": r[5], "semester": r[6]} for r in rows]
             return {"status": "ok", "enrollments": enrollments, "message": f"Found {len(enrollments)} course enrollment(s) for student {student_id}"}
-        except mariadb.Error as exc:
-            return {"status": "error", "enrollments": [], "message": f"Database error while looking up enrollments: {exc}"}
+        except mariadb.Error:
+            return {"status": "error", "enrollments": [], "message": "Database error while looking up enrollments"}
         finally:
             _close_connection(conn)
 
@@ -662,7 +672,7 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
         cursor = None
 
         try:
-            if owns_connection:
+            if conn is None:
                 conn = _get_connection()
 
             cursor = conn.cursor()
@@ -773,17 +783,16 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
                 "message": f"Attendance for {subject or 'all courses'}: {summary}{'...' if len(attendance_rows) > 5 else ''}",
             }
 
-        except mariadb.Error as exc:
+        except mariadb.Error:
             return {
                 "status": "error",
                 "rows": [],
-                "message": f"Database error while reading attendance: {exc}",
+                "message": "Database error while reading attendance",
             }
 
         finally:
             try:
-                if cursor is not None:
-                    cursor.close()
+                _close_cursor(cursor)
             finally:
                 if owns_connection:
                     _close_connection(conn)
@@ -1135,11 +1144,11 @@ def get_marks(student_id: str, subject: Optional[str] = None) -> Dict[str, Any]:
                 "message": ", ".join(summary_parts),
             }
 
-        except mariadb.Error as exc:
+        except mariadb.Error:
             return {
                 "status": "error",
                 "rows": [],
-                "message": f"Database error: {exc}",
+                "message": "Database error",
             }
 
         finally:
@@ -1174,31 +1183,47 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
         try:
             conn = _get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT year, semester, section FROM user_accounts_studentdetails WHERE id = %s LIMIT 1", (student_id,))
-            row = cursor.fetchone()
-            if row is None:
-                return {"status": "not_found", "rows": [], "message": f"I couldn't find student {student_id}"}
-            student_year, student_semester, student_section = row
-            year = year or student_year
-            semester = semester or student_semester
+            cursor.execute(
+                "SELECT year, semester, section FROM user_accounts_studentdetails WHERE id = %s LIMIT 1",
+                (student_id,),
+            )
+            student = cursor.fetchone()
+            if student is None:
+                return {
+                    "status": "not_found",
+                    "rows": [],
+                    "message": f"I couldn't find student {student_id}",
+                }
+
+            student_year, student_semester, student_section = student
+            if year is None:
+                year = student_year
+            if semester is None:
+                semester = student_semester
 
             cursor.execute(
                 """
-                SELECT id, day, section, year, semester, first_period, second_period, third_period, fourth_period, fifth_period,
-                       sixth_period, seventh_period, eighth_period, nineth_period, tenth_period
+                SELECT id, day, section, year, semester,
+                       first_period, second_period, third_period, fourth_period,
+                       fifth_period, sixth_period, seventh_period, eighth_period,
+                       nineth_period, tenth_period
                 FROM course_management_periodallocation
                 WHERE year = %s AND semester = %s AND section = %s
                 ORDER BY FIELD(day, 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'), id
                 """,
                 (year, semester, student_section),
             )
-            rows = cursor.fetchall()
-            if not rows:
-                return {"status": "no_data", "rows": [], "message": f"No timetable found for {student_id} (Year {year}, Semester {semester})"}
+            allocations = cursor.fetchall()
+            if not allocations:
+                return {
+                    "status": "no_data",
+                    "rows": [],
+                    "message": f"No timetable found for {student_id} (Year {year}, Semester {semester})",
+                }
+
             timetable_rows = []
-            for row in rows:
-                periods = {"period_1": row[5], "period_2": row[6], "period_3": row[7], "period_4": row[8], "period_5": row[9], "period_6": row[10], "period_7": row[11], "period_8": row[12], "period_9": row[13], "period_10": row[14]}
-                for period_name, course_code in periods.items():
+            for allocation in allocations:
+                for period_number, course_code in enumerate(allocation[5:15], start=1):
                     if not course_code:
                         continue
                     cursor.execute(
@@ -1207,19 +1232,30 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
                     )
                     course = cursor.fetchone()
                     timetable_rows.append({
-                        "day": row[1], "section": row[2], "year": row[3],
-                        "semester": row[4], "period": period_name,
+                        "day": allocation[1],
+                        "section": allocation[2],
+                        "year": allocation[3],
+                        "semester": allocation[4],
+                        "period": f"period_{period_number}",
                         "course_id": course[0] if course else None,
                         "course_code": course[1] if course else course_code,
                         "course_title": course[2] if course else None,
                     })
-            summary = ", ".join(f"{r['day']} Period {r['period'].split('_')[1]}" for r in timetable_rows[:5])
-            return {"status": "ok", "rows": timetable_rows, "message": f"Timetable for {student_id}: {summary}{'...' if len(timetable_rows) > 5 else ''}"}
-        except mariadb.Error as exc:
+
+            summary = ", ".join(
+                f"{row['day']} Period {row['period'].split('_')[1]}"
+                for row in timetable_rows[:5]
+            )
+            return {
+                "status": "ok",
+                "rows": timetable_rows,
+                "message": f"Timetable for {student_id}: {summary}{'...' if len(timetable_rows) > 5 else ''}",
+            }
+        except mariadb.Error:
             return {
                 "status": "error",
                 "rows": [],
-                "message": f"Database error while reading timetable: {exc}",
+                "message": "Database error while reading timetable",
             }
         finally:
             _close_connection(conn)
@@ -1250,6 +1286,15 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
         raise ValueError("status is required")
     if not actor_id:
         raise ValueError("actor_id is required")
+
+    try:
+        if not isinstance(date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise ValueError
+        calendar_date.fromisoformat(date)
+    except ValueError:
+        return {"status": "invalid", "message": "date must be a valid YYYY-MM-DD date"}
+    if not isinstance(status, str) or status.lower() not in {"present", "absent", "on duty"}:
+        return {"status": "invalid", "message": "status must be present, absent, or on duty"}
 
     if _real_db_enabled():
         conn = connection
@@ -1293,7 +1338,7 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
 
             # SQLite uses course-level rows without a period.  The real ERP
             # stores subject attendance per hour, so a valid period is required.
-            if period is None or not isinstance(period, int) or not 1 <= period <= 10:
+            if period is None or isinstance(period, bool) or not isinstance(period, int) or not 1 <= period <= 10:
                 return {
                     "status": "invalid",
                     "message": "period must be an integer between 1 and 10"
@@ -1378,19 +1423,21 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
                 "message": f"{'Updated' if result_status == 'updated' else 'Marked'} attendance for {student_id} in {subject} on {date}, period {period}, as {status}"
             }
 
-        except mariadb.Error as exc:
+        except mariadb.Error:
             if conn is not None and owns_connection:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except mariadb.Error:
+                    pass
 
             return {
                 "status": "error",
-                "message": f"Database error while writing attendance: {exc}"
+                "message": "Database error while writing attendance"
             }
 
         finally:
             try:
-                if cursor is not None:
-                    cursor.close()
+                _close_cursor(cursor)
             finally:
                 if owns_connection:
                     _close_connection(conn)
@@ -1510,6 +1557,7 @@ def build_schema_map() -> Dict[str, Any]:
                 "examination_management_studentexam",
                 "examination_management_studentmark",
                 "examination_management_studentinternalmark",
+                "examination_management_overallconsolidaterecord",
                 "course_management_periodallocation",
                 "course_management_lab_timetable",
             ]:
@@ -1519,8 +1567,8 @@ def build_schema_map() -> Dict[str, Any]:
                 except mariadb.Error:
                     pass
             return {"tables": tables, "description": f"VoxERP schema mapping for {DB_CONFIG['database']} (MariaDB)", "db_host": DB_CONFIG["host"], "db_port": DB_CONFIG["port"], "db_name": DB_CONFIG["database"]}
-        except mariadb.Error as exc:
-            return {"status": "error", "message": f"Failed to build schema map: {exc}"}
+        except mariadb.Error:
+            return {"status": "error", "message": "Failed to build schema map"}
         finally:
             _close_connection(conn)
 
