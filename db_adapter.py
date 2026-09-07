@@ -748,73 +748,50 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
                     "message": f"I couldn't find student {student_id}",
                 }
 
-            if subject:
-                normalized = _normalize_subject(subject)
+            normalized = _normalize_subject(subject) if subject else None
 
-                cursor.execute(
-                    """
-                    SELECT
-                        ha.id,
-                        ha.date,
-                        ha.status,
-                        NULL,
-                        NULL,
-                        ha.remarks,
-                        c.course_code,
-                        c.title,
-                        ha.period
-                    FROM student_management_hourattendance ha
-                    INNER JOIN course_management_course c
-                        ON ha.course_id = c.id
-                    WHERE ha.student_id = %s
-                    ORDER BY ha.date DESC, ha.id DESC
-                    """,
-                    (student_id,),
-                )
+            cursor.execute(
+                """
+                SELECT
+                    ha.id,
+                    ha.date,
+                    ha.status,
+                    NULL,
+                    NULL,
+                    ha.remarks,
+                    c.course_code,
+                    c.title,
+                    ha.period
+                FROM student_management_hourattendance ha
+                LEFT JOIN course_management_course c
+                    ON ha.course_id = c.id
+                WHERE ha.student_id = %s
+                ORDER BY ha.date DESC, ha.id DESC
+                """,
+                (student_id,),
+            )
 
-                rows = cursor.fetchall()
+            rows = cursor.fetchall()
 
+            if normalized:
                 rows = [
                     r for r in rows
                     if _normalize_subject(r[6]) == normalized
                     or _normalize_subject(r[7]) == normalized
                 ]
 
-                if not rows:
-                    return {
-                        "status": "no_data",
-                        "rows": [],
-                        "message": f"No attendance recorded for {subject}",
-                    }
-
-            else:
-                cursor.execute(
-                    """
-                    SELECT
-                        da.id,
-                        da.date,
-                        da.full_day_status,
-                        da.morning_status,
-                        da.afternoon_status,
-                        da.remarks,
-                        NULL,
-                        NULL,
-                        NULL
-                    FROM student_management_daily_attendance da
-                    WHERE da.student_id = %s
-                    ORDER BY da.date DESC, da.id DESC
-                    """,
-                    (student_id,),
+            if not rows:
+                message = (
+                    f"No attendance recorded for {subject}"
+                    if subject
+                    else f"No attendance recorded for student {student_id}"
                 )
+                return {
+                    "status": "no_data",
+                    "rows": [],
+                    "message": message,
+                }
 
-                rows = cursor.fetchall()
-
-                if not rows:
-                    return {
-                        "status": "no_data",
-                        "rows": [],
-                        "message": f"No attendance recorded for student {student_id}",
-                    }
 
             attendance_rows = [
                 {
