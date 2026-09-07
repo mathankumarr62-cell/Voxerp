@@ -1,7 +1,10 @@
 import datetime
 import os
 import sys
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_from_directory
+
+load_dotenv()
 import db_adapter
 from intelligence.intent_engine import IntentEngine
 from intelligence.rbac import authorize_request, data_router
@@ -105,6 +108,27 @@ def query():
                 return jsonify({"reply_text": "Which subject should I mark absent?"})
 
             status = filters.get("status") or "absent"
+            period = filters.get("period")
+
+            if period is None:
+                print(
+                    "[SERVER LOG] Write request missing attendance period. "
+                    "Asking for period without writing.",
+                    flush=True,
+                )
+                return jsonify({
+                    "reply_text": f"Which period should I mark {status} for {subject}?"
+                })
+
+            if not isinstance(period, int) or not 1 <= period <= 10:
+                print(
+                    f"[SERVER LOG] Invalid attendance period: {period}",
+                    flush=True,
+                )
+                return jsonify({
+                    "reply_text": "Please specify a valid attendance period from 1 to 10."
+                })
+
             date = filters.get("date") or datetime.date.today().isoformat()
             student_name = filters.get("student_name")
             target_display = student_name if student_name and student_name.lower() != "you" else "you"
@@ -114,12 +138,18 @@ def query():
                 "subject": subject,
                 "date": date,
                 "status": status,
+                "period": period,
                 "actor_id": user_id,
+                "role": role,
             }
 
             print(f"[SERVER LOG] Write request authorized. Preparing confirmation request (db_adapter.mark_attendance NOT called yet). Pending payload: {pending}", flush=True)
 
-            confirm_text = f"Mark {target_display} {status} in {subject} for today. Say yes or no."
+            confirm_text = (
+                f"Mark {target_display} {status} in {subject}, period {period} for today. "
+                "Say yes or no."
+            )
+
             return jsonify({
                 "reply_text": confirm_text,
                 "requires_confirmation": True,
@@ -165,7 +195,16 @@ def confirm():
 
     print(f"\n[SERVER LOG] Received /confirm: decision='{decision}', pending={pending}", flush=True)
 
-    required = ["student_id", "subject", "date", "status", "actor_id"]
+    required = [
+        "student_id",
+        "subject",
+        "date",
+        "status",
+        "period",
+        "actor_id",
+        "role",
+    ]
+
     if not all(k in pending for k in required):
         return jsonify({"reply_text": "I lost track of that request, please try again."}), 400
 
@@ -174,10 +213,15 @@ def confirm():
         return jsonify({"reply_text": "Okay, no changes made."})
 
     try:
-        demo_user = db_adapter.get_demo_user(pending["actor_id"])
-        if not demo_user:
-            return jsonify({"reply_text": "I couldn't verify the current user."}), 403
+        role = pending.get("role")
+        if not isinstance(role, str) or not role.strip():
+            return jsonify({"reply_text": "I couldn't verify the current user role."}), 403
 
+        period = pending.get("period")
+        if not isinstance(period, int) or not 1 <= period <= 10:
+            return jsonify({
+                "reply_text": "I couldn't verify the attendance period. Please start the request again with a period from 1 to 10."
+            }), 400
         confirm_intent = {
             "action": "write",
             "table": "attendance",
@@ -186,12 +230,13 @@ def confirm():
                 "subject": pending["subject"],
                 "date": pending["date"],
                 "status": pending["status"],
+                "period": period,
             },
         }
 
         auth_res = authorize_request(
             pending["actor_id"],
-            demo_user["role"],
+            role,
             confirm_intent,
             f"mark {pending['student_id']} {pending['status']} in {pending['subject']}",
         )
@@ -220,6 +265,7 @@ def confirm():
             pending["date"],
             pending["status"],
             actor_id=pending["actor_id"],
+            period=period,
         )
         print(f"[SERVER LOG] db_adapter.mark_attendance result: {result}", flush=True)
         return jsonify({"reply_text": generate_response(result)})

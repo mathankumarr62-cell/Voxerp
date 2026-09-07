@@ -55,6 +55,10 @@ INTENT_SCHEMA = {
                     "type": ["string", "null"],
                     "description": "Attendance status such as absent or present.",
                 },
+                "period": {
+                    "type": ["integer", "null"],
+                    "description": "Attendance period number if explicitly mentioned, from 1 to 10.",
+                },
             },
             "required": [
                 "student_id",
@@ -62,6 +66,7 @@ INTENT_SCHEMA = {
                 "subject",
                 "date",
                 "status",
+                "period",
             ],
             "additionalProperties": False,
         },
@@ -131,6 +136,25 @@ class IntentEngine:
             return self._fallback_intent()
 
         clean_text = text.strip()
+
+        # Deterministic handling for unmistakable attendance-write commands.
+        # These commands are explicit enough that Gemini classification is
+        # unnecessary and could introduce avoidable wording-dependent failures.
+        write_verbs = ("mark", "record", "set", "update")
+        has_write_verb = any(
+            re.search(rf"\b{re.escape(verb)}\b", clean_text, flags=re.IGNORECASE)
+            for verb in write_verbs
+        )
+        has_attendance_status = any(
+            re.search(rf"\b{status}\b", clean_text, flags=re.IGNORECASE)
+            for status in ("absent", "present")
+        )
+
+        if has_write_verb and has_attendance_status:
+            return self._apply_write_safety_guard(
+                clean_text,
+                {"action": "write", "table": "attendance", "filters": {}},
+            )
 
         # Offline deterministic mode for presentations and demos.
         # Only use it when the application explicitly has a client available.
@@ -236,6 +260,7 @@ Classification rules:
 8. Extract the subject exactly as spoken, without inventing a subject.
 9. Extract a date only when the user explicitly gives one.
 10. For attendance writes, extract the requested status such as "absent" or "present".
+10a. For attendance writes, extract the period only when the user explicitly mentions it, such as "period 6", "6th period", or "6th hour". The period must be an integer from 1 to 10. Never guess a missing period.
 11. Do not decide whether the user is authorized to access another student. RBAC handles that separately.
 12. Do not invent missing filters.
 13. If the user says "my", "me", or "myself", do not treat that as a different student target; it is only a self-reference.
@@ -280,6 +305,7 @@ Classification rules:
             "subject",
             "date",
             "status",
+            "period",
         }
 
         cleaned_filters = {
@@ -459,6 +485,30 @@ Classification rules:
         # The subject is taken only from the text immediately before
         # the explicit attendance status.
         if not guarded_filters.get("subject"):
+            # Support self-reference commands with multi-word subjects.
+            # Example:
+            #   Mark my Distributed Computing attendance absent
+            #
+            # "attendance" provides an explicit boundary, so we do not
+            # guess arbitrary words as the subject.
+            self_subject_match = re.search(
+                r"\b(?:mark|record|set|update)"
+                r"\s+(?:my|me|myself)\s+"
+                r"(.+?)\s+attendance\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            if self_subject_match:
+                candidate_subject = self_subject_match.group(1).strip()
+                sanitized_subject = IntentEngine._sanitize_subject(candidate_subject)
+                if sanitized_subject:
+                    guarded_filters["subject"] = sanitized_subject
+
+        # Also support the compact form:
+        #   Mark my DBMS absent
+        #   Mark me DBMS present
+        if not guarded_filters.get("subject"):
             self_subject_match = re.search(
                 r"\b(?:mark|record|set|update)"
                 r"\s+(?:my|me|myself)\s+"
@@ -474,6 +524,33 @@ Classification rules:
                 if sanitized_subject:
                     guarded_filters["subject"] = sanitized_subject
 
+        # Extract an attendance period only when it is explicitly stated.
+        # Examples: "period 6", "hour 6", "6th period", "6th hour".
+        period = guarded_filters.get("period")
+
+        if period is None:
+            period_match = re.search(
+                r"\b(?:period|hour)\s*(?:number\s*)?(\d{1,2})\b"
+                r"|\b(\d{1,2})(?:st|nd|rd|th)\s+(?:period|hour)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            if period_match:
+                detected_period = next(
+                    (
+                        group
+                        for group in period_match.groups()
+                        if group is not None
+                    ),
+                    None,
+                )
+
+                if detected_period is not None:
+                    period_value = int(detected_period)
+                    if 1 <= period_value <= 10:
+                        period = period_value
+
         return {
             "action": "write",
             "table": "attendance",
@@ -483,6 +560,7 @@ Classification rules:
                 "subject": guarded_filters.get("subject"),
                 "date": guarded_filters.get("date"),
                 "status": detected_status,
+                "period": period,
             },
         }
 
