@@ -657,17 +657,98 @@ Classification rules:
             })
 
         # Marks detection
-        if "marks" in lowered_l or ("mark" in lowered_l and "absent" not in lowered_l):
-            # Try to extract subject
+        # Support natural variations such as marks, scores, exam marks,
+        # and score-based questions without hardcoding specific queries.
+        marks_terms = (
+            "marks",
+            "mark",
+            "scores",
+            "score",
+            "exam result",
+            "exam results",
+            "results",
+        )
+
+        is_marks_query = any(
+            term in lowered_l for term in marks_terms
+        )
+
+        # Avoid treating attendance write commands such as
+        # "mark me absent" as marks queries.
+        if is_marks_query and not (
+            ("absent" in lowered_l or "present" in lowered_l)
+            and any(
+                action_word in lowered_l
+                for action_word in ("mark", "record", "set")
+            )
+        ):
+            # Try to extract an explicitly mentioned subject/course.
+            # Supports course codes and natural-language course titles without
+            # maintaining a hardcoded course list.
+
             subject = None
-            m = re.search(r"\bin\s+([A-Za-z][A-Za-z0-9&._\- ]*)\b", text)
-            if m:
-                subject = m.group(1).strip()
+
+            # Course-code style tokens, e.g. AD3491, CS3551, MA3391.
+            # Require both letters and digits so ordinary words are not
+            # accidentally treated as course codes.
+            course_code_match = re.search(
+                r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)"
+                r"[A-Za-z][A-Za-z0-9._-]*\b",
+                text,
+            )
+
+            if course_code_match:
+                subject = course_code_match.group(0).strip()
             else:
-                for candidate in ("DBMS", "AI", "Maths", "Operating Systems", "Computer Networks"):
-                    if candidate.lower() in lowered_l:
+                # Natural-language subject after "in" or "for".
+                subject_match = re.search(
+                    r"\b(?:in|for)\s+(.+?)(?=\s+(?:marks?|scores?|results?)\b|[?.!,]*$)",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+
+                if subject_match:
+                    candidate = subject_match.group(1).strip(" \t\n?.!,")
+                    if candidate:
                         subject = candidate
-                        break
+
+                # Subject before "marks/scores/results", e.g.
+                # "Show my Distributed Computing marks".
+                if subject is None:
+                    before_marks = re.search(
+                        r"\b(?:my\s+)?(.+?)\s+(?:marks?|scores?|results?)\b",
+                        text,
+                        flags=re.IGNORECASE,
+                    )
+
+                    if before_marks:
+                        candidate = before_marks.group(1).strip()
+
+                        # Remove conversational prefixes that are not part
+                        # of the subject.
+                        candidate = re.sub(
+                            r"^(?:what\s+are|what\s+is|show|give|tell\s+me|"
+                            r"get|display)\s+(?:my\s+)?",
+                            "",
+                            candidate,
+                            flags=re.IGNORECASE,
+                        ).strip()
+
+                        if candidate and candidate.lower() not in {
+                            "my",
+                            "me",
+                            "the",
+                            "exam",
+                            "exam result",
+                            "exam results",
+                            "result",
+                            "results",
+                            "score",
+                            "scores",
+                            "mark",
+                            "marks",
+                        }:
+                            subject = candidate
 
             # Try to extract an explicit student name.
             # Examples:

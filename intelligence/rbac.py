@@ -156,21 +156,39 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
 
 def _is_self_reference(text: str) -> bool:
     lowered = (text or "").lower()
+
+    # Explicit references to another person/student always take priority.
     if _mentions_other_student(text):
         return False
 
     explicit_self_patterns = [
+        # Possessive/self references.
         " my ",
         "myself",
         " my marks",
+        " my scores",
+        " my results",
         " my attendance",
         " my timetable",
         "show me my",
         "show me myself",
         "me my",
-        " me ",
+
+        # First-person references.
+        " i ",
+        " i scored",
+        " i score",
+        " i got",
+        " i received",
+        " i obtained",
+        " what did i get",
+        "what did i score",
+        "how much did i score",
+        "how much did i get",
     ]
-    return any(token in lowered for token in explicit_self_patterns)
+
+    padded = f" {lowered} "
+    return any(pattern in padded for pattern in explicit_self_patterns)
 
 
 def _mentions_other_student(text: str) -> bool:
