@@ -1333,6 +1333,14 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
         return {"status": "invalid", "message": "status must be present, absent, or on duty"}
 
     if _real_db_enabled():
+        # Real writes are explicitly opt-in. When disabled, do not connect
+        # to the real ERP database from this write path.
+        if not _real_writes_enabled():
+            return {
+                "status": "disabled",
+                "message": "Real database writes are disabled"
+            }
+
         conn = connection
         owns_connection = connection is None
         cursor = None
@@ -1386,11 +1394,6 @@ def mark_attendance(student_id: str, subject: str, date: str, status: str, actor
             # available to callers without changing the database.  Actor
             # authorization is deliberately enforced by the RBAC/policy layer,
             # which has the caller's authenticated role and scope.
-            if not _real_writes_enabled():
-                return {
-                    "status": "disabled",
-                    "message": "Real database writes are disabled"
-                }
 
             cursor.execute(
                 """
