@@ -438,12 +438,30 @@ Classification rules:
 
         guarded_filters["status"] = detected_status
 
-        # If Gemini failed to extract the student name, recover an explicitly
-        # mentioned name from common commands such as:
+        # Explicitly preserve a non-self student target.
+        # Examples:
+        #   Mark student 2 absent ...
+        #   Mark student-2 absent ...
+        #
+        # Do not reinterpret this as self-reference. RBAC will fail closed
+        # when the requesting student is not authorized for that target.
+        if not guarded_filters.get("student_id") and not guarded_filters.get("student_name"):
+            explicit_student_match = re.search(
+                r"\b(?:student|student_id|student-id)\s*[-:]?\s*(\d+)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            if explicit_student_match:
+                guarded_filters["student_id"] = explicit_student_match.group(1)
+
+        # Recover an explicitly mentioned student name from commands such as:
         #   Mark Vijay absent
         #   Record Vijay present
-        #   Mark Vijay absent in DBMS
-        if not guarded_filters.get("student_name"):
+        if (
+            not guarded_filters.get("student_name")
+            and not guarded_filters.get("student_id")
+        ):
             name_match = re.search(
                 r"\b(?:mark|record|set|update)"
                 r"(?:\s+attendance)?"
@@ -456,41 +474,46 @@ Classification rules:
 
             if name_match:
                 candidate = name_match.group(1)
-                # Sanitize extracted candidate before treating it as a name
-                sanitized = IntentEngine._sanitize_student_name(candidate)
-                if sanitized:
-                    guarded_filters["student_name"] = sanitized
 
-        # Recover a subject only when it is explicitly introduced by "in".
-        # Example:
-        #   Mark Vijay absent in DBMS
+                # Do not treat self-reference or generic target words as names.
+                if candidate.lower() not in {
+                    "my",
+                    "me",
+                    "myself",
+                    "student",
+                }:
+                    sanitized = IntentEngine._sanitize_student_name(candidate)
+                    if sanitized:
+                        guarded_filters["student_name"] = sanitized
+
+        # Recover multi-word subjects only when explicitly bounded.
         #
-        # We deliberately do not guess subjects from arbitrary words.
+        # Examples:
+        #   Mark Vijay absent in Distributed Computing
+        #   Mark my Distributed Computing attendance absent
+        #
+        # We do not guess arbitrary words as a subject.
         if not guarded_filters.get("subject"):
             subject_match = re.search(
-                r"\bin\s+([A-Za-z][A-Za-z0-9&._-]*)\b",
+                r"\bin\s+(.+?)(?=\s+for\s+(?:period|hour)\b|\s+(?:present|absent)\b|$)",
                 text,
                 flags=re.IGNORECASE,
             )
 
             if subject_match:
-                candidate_subject = subject_match.group(1)
+                candidate_subject = subject_match.group(1).strip()
                 sanitized_subject = IntentEngine._sanitize_subject(candidate_subject)
+
                 if sanitized_subject:
                     guarded_filters["subject"] = sanitized_subject
 
-        # Also support natural self-reference commands such as:
-        #   Mark my DBMS absent
-        #   Mark me DBMS absent
-        # The subject is taken only from the text immediately before
-        # the explicit attendance status.
+        # Support natural self-reference commands such as:
+        #   Mark my Distributed Computing attendance absent
+        #   Mark me DBMS attendance present
+        #
+        # "attendance" provides an explicit boundary, so we do not guess
+        # arbitrary words as the subject.
         if not guarded_filters.get("subject"):
-            # Support self-reference commands with multi-word subjects.
-            # Example:
-            #   Mark my Distributed Computing attendance absent
-            #
-            # "attendance" provides an explicit boundary, so we do not
-            # guess arbitrary words as the subject.
             self_subject_match = re.search(
                 r"\b(?:mark|record|set|update)"
                 r"\s+(?:my|me|myself)\s+"
@@ -502,6 +525,7 @@ Classification rules:
             if self_subject_match:
                 candidate_subject = self_subject_match.group(1).strip()
                 sanitized_subject = IntentEngine._sanitize_subject(candidate_subject)
+
                 if sanitized_subject:
                     guarded_filters["subject"] = sanitized_subject
 
@@ -521,6 +545,7 @@ Classification rules:
             if self_subject_match:
                 candidate_subject = self_subject_match.group(1)
                 sanitized_subject = IntentEngine._sanitize_subject(candidate_subject)
+
                 if sanitized_subject:
                     guarded_filters["subject"] = sanitized_subject
 
