@@ -10,6 +10,18 @@ from google import genai
 
 MODEL_NAME = "gemini-3.6-flash"
 
+# Local Gemma 4 E4B model.
+# This is the primary local intent-classification engine.
+GEMMA_MODEL_NAME = os.getenv(
+    "VOXERP_GEMMA_MODEL",
+    "mlx-community/gemma-4-e4b-it-4bit",
+)
+GEMMA_MAX_TOKENS = int(os.getenv("VOXERP_GEMMA_MAX_TOKENS", "80"))
+GEMMA_TEMPERATURE = float(os.getenv("VOXERP_GEMMA_TEMPERATURE", "0.0"))
+GEMMA_REPETITION_PENALTY = float(
+    os.getenv("VOXERP_GEMMA_REPETITION_PENALTY", "1.05")
+)
+
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -80,44 +92,32 @@ class IntentEngine:
     """Convert natural-language VoxERP queries into structured intents."""
 
     def __init__(self, client: genai.Client | None = None) -> None:
+        """
+        Initialize the VoxERP intent engine.
+
+        Local Gemma 4 E4B is the normal inference engine.
+        An explicitly injected Gemini client is retained only for
+        compatibility with existing tests.
+        """
         self.client = client
+        self.model = None
+        self.processor = None
+        self.gemma_available = False
 
-        if self.client is None:
-            api_key = os.getenv("GEMINI_API_KEY")
+        # Explicitly injected Gemini clients are preserved for tests.
+        if self.client is not None:
+            return
 
-            if not api_key:
-                env_paths = [
-                    os.path.expanduser("~/.env"),
-                    os.path.join(os.path.dirname(__file__), "..", ".env"),
-                ]
+        try:
+            from mlx_vlm import load
 
-                for env_path in env_paths:
-                    if not os.path.isfile(env_path):
-                        continue
-
-                    try:
-                        with open(env_path, "r", encoding="utf-8") as file:
-                            for line in file:
-                                line = line.strip()
-
-                                if line.startswith("GEMINI_API_KEY="):
-                                    api_key = line.split(
-                                        "=", 1
-                                    )[1].strip("'\" ")
-                                    break
-                    except Exception:
-                        pass
-
-                    if api_key:
-                        break
-
-            if api_key:
-                try:
-                    self.client = genai.Client(api_key=api_key)
-                except Exception:
-                    self.client = None
-            else:
-                self.client = None
+            self.model, self.processor = load(GEMMA_MODEL_NAME)
+            self.gemma_available = True
+        except Exception:
+            # Fail closed. Never silently fall back to a cloud API.
+            self.model = None
+            self.processor = None
+            self.gemma_available = False
 
     def parse(
         self,
@@ -163,54 +163,256 @@ class IntentEngine:
         if (
             isinstance(offline_flag, str)
             and offline_flag.strip().lower() in {"1", "true", "yes"}
-            and self.client is not None
+            and (self.gemma_available or self.client is not None)
         ):
             return self._offline_intent(clean_text, normalized_role, schema_map)
 
-        prompt = self._build_prompt(
-            text=clean_text,
-            role=normalized_role,
-            schema_map=schema_map,
-        )
+        # ========================================================
+        # Local Gemma 4 E4B — primary intent classifier
+        # ========================================================
 
-        if self.client is None:
-            return {"action": "unsupported", "table": "unsupported", "filters": {}}
+        if self.gemma_available:
+            try:
+                parsed = self._generate_gemma_intent(
+                    text=clean_text,
+                    role=normalized_role,
+                    schema_map=schema_map,
+                )
 
-        try:
-            response = self.client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt,
-                config={
-                    "response_mime_type": "application/json",
-                    "response_json_schema": INTENT_SCHEMA,
-                    "system_instruction": (
-                        "You are the VoxERP intent classification engine. "
-                        "Classify the user's request only within the supported "
-                        "ERP operations. Never invent database tables or fields. "
-                        "Do not make authorization decisions; RBAC is handled "
-                        "separately after intent classification."
-                    ),
-                },
-            )
+                intent = self._validate_intent(parsed)
 
-            if not getattr(response, "text", None):
+                # Recover explicit targets that Gemma may omit.
+                intent = self._apply_explicit_student_target(clean_text, intent)
+
+                # Existing deterministic safety layer remains active.
+                return self._apply_write_safety_guard(clean_text, intent)
+
+            except Exception:
                 return self._fallback_intent()
 
-            parsed = json.loads(response.text)
+        # ========================================================
+        # Compatibility path for explicitly injected Gemini clients
+        # ========================================================
 
-            intent = self._validate_intent(parsed)
+        if self.client is not None:
+            try:
+                prompt = self._build_prompt(
+                    text=clean_text,
+                    role=normalized_role,
+                    schema_map=schema_map,
+                )
 
-            # Deterministic safety guard for explicit attendance writes.
-            #
-            # Gemini remains responsible for normal natural-language
-            # understanding, but an unmistakable command such as
-            # "Mark Vijay absent" must never randomly become unsupported.
-            intent = self._apply_write_safety_guard(clean_text, intent)
+                response = self.client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_json_schema": INTENT_SCHEMA,
+                        "system_instruction": (
+                            "You are the VoxERP intent classification engine. "
+                            "Classify the user's request only within the supported "
+                            "ERP operations. Never invent database tables or fields. "
+                            "Do not make authorization decisions; RBAC is handled "
+                            "separately after intent classification."
+                        ),
+                    },
+                )
 
+                if not getattr(response, "text", None):
+                    return self._fallback_intent()
+
+                parsed = json.loads(response.text)
+                intent = self._validate_intent(parsed)
+
+                return self._apply_write_safety_guard(clean_text, intent)
+
+            except Exception:
+                return self._fallback_intent()
+
+        return self._fallback_intent()
+
+
+    def _apply_explicit_student_target(
+        self,
+        text: str,
+        intent: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Recover an explicit student target when the intent classifier
+        omitted it.
+
+        This only exposes the target to the existing RBAC layer.
+        It does not authorize the target.
+        """
+        if not isinstance(text, str) or not isinstance(intent, dict):
             return intent
 
-        except Exception:
-            return self._fallback_intent()
+        filters = intent.get("filters")
+        if not isinstance(filters, dict):
+            return intent
+
+        # Never overwrite a target already extracted by the model.
+        if filters.get("student_id") or filters.get("student_name"):
+            return intent
+
+        match = re.search(
+            r"\bstudent\s+([A-Za-z0-9_-]+)(?:['’]s)?(?=\s+(?:marks?|attendance|timetable|results?|policy)\b|[\s?.!,]*$)",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            filters["student_id"] = str(match.group(1))
+
+        return intent
+
+    def _generate_gemma_intent(
+        self,
+        text: str,
+        role: str,
+        schema_map: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Generate a VoxERP intent using local Gemma 4 E4B."""
+
+        if self.model is None or self.processor is None:
+            raise RuntimeError("Local Gemma model is not available")
+
+        tokenizer = getattr(self.processor, "tokenizer", None)
+
+        if tokenizer is None:
+            tokenizer = self.processor
+
+        system_prompt = f"""
+You are the VoxERP intent classification engine.
+
+Return ONLY one valid JSON object.
+Do not answer the user's question.
+Do not use Markdown.
+Do not add explanations.
+Do not invent database tables, students, subjects, dates, or filters.
+Do not make authorization decisions. RBAC handles authorization separately.
+
+The user's role is: {role}
+
+Use exactly this JSON structure:
+
+{{
+  "action": "read|write|policy_query|unsupported",
+  "table": "attendance|marks|timetable|policy|unsupported",
+  "filters": {{
+    "student_id": null,
+    "student_name": null,
+    "subject": null,
+    "date": null,
+    "status": null,
+    "period": null
+  }}
+}}
+
+Rules:
+- Attendance queries -> read / attendance.
+- Marks, scores, exam marks, exam results -> read / marks.
+- Timetable or class schedule -> read / timetable.
+- Mark, record, set, or update attendance as present or absent
+  -> write / attendance.
+- Policy, rules, regulations, guidelines, syllabus, FAQ, or procedures
+  -> policy_query / policy.
+- Unsupported requests -> unsupported / unsupported.
+- Extract student_id only when explicitly provided.
+- Extract student_name only when explicitly mentioned.
+- "my", "me", or "myself" means self-reference.
+- Extract subject exactly as spoken.
+- Extract date only when explicitly mentioned.
+- For attendance writes, extract status only when explicitly stated.
+- Extract period only when explicitly stated.
+- Period must be an integer from 1 to 10.
+- Never guess missing information.
+- Never decide authorization.
+- Never invent filters.
+
+Database schema context:
+{json.dumps(schema_map, ensure_ascii=False, separators=(",", ":"))}
+""".strip()
+
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": text,
+            },
+        ]
+
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+
+        from mlx_vlm import generate
+
+        result = generate(
+            self.model,
+            self.processor,
+            prompt=prompt,
+            max_tokens=GEMMA_MAX_TOKENS,
+            temperature=GEMMA_TEMPERATURE,
+            repetition_penalty=GEMMA_REPETITION_PENALTY,
+            repetition_context_size=32,
+            top_p=1.0,
+            top_k=1,
+        )
+
+        raw_text = getattr(result, "text", None)
+
+        if not raw_text:
+            raw_text = str(result)
+
+        return self._extract_json_object(raw_text)
+
+    @staticmethod
+    def _extract_json_object(raw_text: str) -> Dict[str, Any]:
+        """Safely extract a JSON object from Gemma output."""
+
+        if not isinstance(raw_text, str):
+            raise ValueError("Model output is not text")
+
+        candidate = raw_text.strip()
+
+        # Remove Markdown fences if Gemma adds them.
+        candidate = re.sub(
+            r"^```(?:json)?\s*",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
+        )
+        candidate = re.sub(r"\s*```$", "", candidate)
+
+        try:
+            parsed = json.loads(candidate)
+
+            if isinstance(parsed, dict):
+                return parsed
+
+        except json.JSONDecodeError:
+            pass
+
+        # Recover JSON if surrounding text was generated.
+        start = candidate.find("{")
+
+        if start == -1:
+            raise ValueError("No JSON object found in model output")
+
+        decoder = json.JSONDecoder()
+        parsed, _ = decoder.raw_decode(candidate[start:])
+
+        if not isinstance(parsed, dict):
+            raise ValueError("Model output is not a JSON object")
+
+        return parsed
 
     @staticmethod
     def _build_prompt(
@@ -312,6 +514,13 @@ Classification rules:
             key: filters.get(key)
             for key in allowed_filters
         }
+
+        # Keep student IDs canonical across model outputs. Gemma may emit
+        # numeric IDs as integers (for example, 2) while RBAC expects
+        # string IDs (for example, "2").
+        raw_student_id = cleaned_filters.get("student_id")
+        if isinstance(raw_student_id, int) and not isinstance(raw_student_id, bool):
+            cleaned_filters["student_id"] = str(raw_student_id)
 
         # Sanitize student_name and subject to avoid question words or
         # self-references becoming student targets (e.g. "what", "what's",
@@ -491,11 +700,32 @@ Classification rules:
         # Examples:
         #   Mark Vijay absent in Distributed Computing
         #   Mark my Distributed Computing attendance absent
+        #   Mark me absent for Distributed Computing period 6
         #
         # We do not guess arbitrary words as a subject.
         if not guarded_filters.get("subject"):
             subject_match = re.search(
                 r"\bin\s+(.+?)(?=\s+for\s+(?:period|hour)\b|\s+(?:present|absent)\b|$)",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            if subject_match:
+                candidate_subject = subject_match.group(1).strip()
+                sanitized_subject = IntentEngine._sanitize_subject(candidate_subject)
+
+                if sanitized_subject:
+                    guarded_filters["subject"] = sanitized_subject
+
+        # Also support commands where "for" introduces the subject:
+        #   Mark me absent for Distributed Computing period 6
+        #   Mark me present for DBMS hour 2
+        #
+        # The period/hour boundary prevents us from treating the rest of the
+        # sentence as a subject.
+        if not guarded_filters.get("subject"):
+            subject_match = re.search(
+                r"\bfor\s+(.+?)(?=\s+(?:period|hour)\s*(?:number\s*)?\d{1,2}\b|$)",
                 text,
                 flags=re.IGNORECASE,
             )
@@ -793,26 +1023,53 @@ Classification rules:
         # Attendance detection
         if "attendance" in lowered_l or "how much attendance" in lowered_l:
             subject = None
-            m = re.search(r"\b(dbms|ai|maths|operating systems|computer networks)\b", lowered_l)
-            if m:
-                subject = m.group(1)
-                # Beautify common subjects
-                if subject.lower() == "dbms":
-                    subject = "DBMS"
-                elif subject.lower() == "ai":
-                    subject = "AI"
-                elif subject.lower() == "maths":
-                    subject = "Maths"
-                elif subject.lower() == "operating systems":
-                    subject = "Operating Systems"
-                elif subject.lower() == "computer networks":
-                    subject = "Computer Networks"
-            else:
-                m2 = re.search(r"\b(in|for)\s+([A-Za-z][A-Za-z0-9&._\- ]*)\b", text)
-                if m2:
-                    subject = m2.group(2).strip()
 
-            # student_name extraction similar to marks
+            # Explicit subject before "attendance":
+            #   What is my DBMS attendance?
+            #   Show my Distributed Computing attendance.
+            subject_before_attendance = re.search(
+                r"\b(?:my\s+)?(.+?)\s+attendance\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+            if subject_before_attendance:
+                candidate = subject_before_attendance.group(1).strip()
+
+                # Remove common conversational prefixes.
+                candidate = re.sub(
+                    r"^(?:what\s+is|what\s+are|show|give|tell\s+me|"
+                    r"get|display)\s+(?:my\s+)?",
+                    "",
+                    candidate,
+                    flags=re.IGNORECASE,
+                ).strip()
+
+                if candidate and candidate.lower() not in {
+                    "my",
+                    "me",
+                    "the",
+                    "your",
+                    "student",
+                }:
+                    subject = candidate
+
+            # Explicit subject after "in" or "for":
+            #   What is my attendance for DBMS?
+            #   Show attendance in Distributed Computing.
+            if subject is None:
+                subject_match = re.search(
+                    r"\b(?:in|for)\s+(.+?)(?=\s+attendance\b|[?.!,]*$)",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+
+                if subject_match:
+                    candidate = subject_match.group(1).strip(" \t\n?.!,")
+                    if candidate:
+                        subject = candidate
+
+            # Student name extraction.
             student_name = IntentEngine._offline_extract_student_name(text)
 
             return IntentEngine._validate_intent({
@@ -824,6 +1081,7 @@ Classification rules:
                     "subject": subject,
                     "date": None,
                     "status": None,
+                    "period": None,
                 },
             })
 
@@ -875,5 +1133,6 @@ Classification rules:
                 "subject": None,
                 "date": None,
                 "status": None,
+                "period": None,
             },
         }

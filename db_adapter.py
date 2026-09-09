@@ -239,6 +239,7 @@ def _sqlite_seed() -> None:
             )
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS attendance (
@@ -251,6 +252,7 @@ def _sqlite_seed() -> None:
             )
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS write_log (
@@ -265,6 +267,7 @@ def _sqlite_seed() -> None:
             )
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS courses (
@@ -277,6 +280,7 @@ def _sqlite_seed() -> None:
             )
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS enrollments (
@@ -291,6 +295,7 @@ def _sqlite_seed() -> None:
             )
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS timetable (
@@ -305,6 +310,7 @@ def _sqlite_seed() -> None:
             )
             """
         )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS marks (
@@ -319,48 +325,165 @@ def _sqlite_seed() -> None:
             )
             """
         )
+
         _sqlite_migrate_schema(conn)
 
-        conn.execute(
-            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("student-1", "Alice Johnson", "2024001", "2024", 2, 3, "A", "alice@example.com", 1, "student", "CSE-A"),
+        # Students
+        students = [
+            ("student-1", "Alice Johnson", "2024001", "2024", 2, 3, "A",
+             "alice@example.com", 1, "student", "CSE-A"),
+            ("student-2", "Bob Smith", "2024002", "2024", 2, 3, "A",
+             "bob@example.com", 1, "student", "CSE-A"),
+            ("student-6", "Charlie Young", "2024006", "2024", 2, 3, "A",
+             "charlie@example.com", 1, "student", "CSE-A"),
+            ("teacher-1", "Teacher One", "T001", "2024", 2, 3, "A",
+             "teacher@example.com", 1, "teacher", "CSE-A"),
+        ]
+
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO students
+            (id, name, reg_no, batch, year, semester, section,
+             email, department_id, role, class_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            students,
         )
-        conn.execute(
-            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("student-2", "Bob Smith", "2024002", "2024", 2, 3, "A", "bob@example.com", 1, "student", "CSE-A"),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("student-6", "Charlie Young", "2024006", "2024", 2, 3, "A", "charlie@example.com", 1, "student", "CSE-A"),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO students (id, name, reg_no, batch, year, semester, section, email, department_id, role, class_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("teacher-1", "Teacher One", "T001", "2024", 2, 3, "A", "teacher@example.com", 1, "teacher", "CSE-A"),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO courses (id, course_code, title, year, semester, department_id) VALUES (?, ?, ?, ?, ?, ?)",
+
+        # Courses
+        courses = [
             (1, "DBMS", "Database Management Systems", 2, 3, 1),
+            (2, "AD3491", "Artificial Intelligence", 2, 3, 1),
+            (3, "CS3551", "Distributed Computing", 2, 3, 1),
+        ]
+
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO courses
+            (id, course_code, title, year, semester, department_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            courses,
         )
-        conn.execute(
-            "INSERT OR IGNORE INTO attendance (student_id, subject, attendance_date, status) VALUES (?, ?, ?, ?)",
+
+        # Attendance
+        attendance = [
             ("student-1", "DBMS", "2026-08-20", "present"),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO enrollments (student_id, course_id, enrollment_date, course_code, course_title, year, semester) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("student-1", 1, "2026-08-01", "DBMS", "Database Management Systems", 2, 3),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO marks (student_id, exam_name, course_code, course_title, date, marks_obtained, max_marks) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("student-1", "Unit Test 1", "DBMS", "Database Management Systems", "2026-08-15", 88, 100),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO timetable (student_id, day, section, year, semester, period, course_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("student-1", "DBMS", "2026-08-11", "absent"),
+            ("student-1", "Distributed Computing", "2026-08-19", "present"),
+            ("student-1", "Distributed Computing", "2026-08-18", "present"),
+            ("student-1", "Distributed Computing", "2026-08-17", "absent"),
+            ("student-2", "DBMS", "2026-08-09", "absent"),
+        ]
+
+        for row in attendance:
+            conn.execute(
+                """
+                INSERT INTO attendance
+                (student_id, subject, attendance_date, status)
+                SELECT ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM attendance
+                    WHERE student_id = ?
+                      AND LOWER(subject) = LOWER(?)
+                      AND attendance_date = ?
+                      AND LOWER(status) = LOWER(?)
+                )
+                """,
+                (*row, *row),
+            )
+
+        # Enrollments
+        enrollments = [
+            ("student-1", 1, "2026-08-01", "DBMS",
+             "Database Management Systems", 2, 3),
+            ("student-1", 2, "2026-08-01", "AD3491",
+             "Artificial Intelligence", 2, 3),
+            ("student-1", 3, "2026-08-01", "CS3551",
+             "Distributed Computing", 2, 3),
+        ]
+
+        for row in enrollments:
+            conn.execute(
+                """
+                INSERT INTO enrollments
+                (student_id, course_id, enrollment_date, course_code,
+                 course_title, year, semester)
+                SELECT ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM enrollments
+                    WHERE student_id = ?
+                      AND course_id = ?
+                      AND year = ?
+                      AND semester = ?
+                )
+                """,
+                (*row, row[0], row[1], row[5], row[6]),
+            )
+
+        # Marks
+        marks = [
+            ("student-1", "Unit Test 1", "DBMS",
+             "Database Management Systems", "2026-08-15", 88, 100),
+            ("student-1", "IAT 1", "AD3491",
+             "Artificial Intelligence", "2026-08-16", 60, 100),
+            ("student-1", "IAT 2", "AD3491",
+             "Artificial Intelligence", "2026-08-25", 72, 100),
+            ("student-2", "IAT 1", "AD3491",
+             "Artificial Intelligence", "2026-08-16", 91, 100),
+        ]
+
+        for row in marks:
+            conn.execute(
+                """
+                INSERT INTO marks
+                (student_id, exam_name, course_code, course_title,
+                 date, marks_obtained, max_marks)
+                SELECT ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM marks
+                    WHERE student_id = ?
+                      AND exam_name = ?
+                      AND course_code = ?
+                      AND date = ?
+                )
+                """,
+                (*row, row[0], row[1], row[2], row[4]),
+            )
+
+        # Timetable
+        timetable = [
             ("student-1", "Monday", "A", 2, 3, "period_1", 1),
-        )
+            ("student-1", "Monday", "A", 2, 3, "period_2", 2),
+            ("student-1", "Tuesday", "A", 2, 3, "period_3", 3),
+            ("student-1", "Wednesday", "A", 2, 3, "period_4", 1),
+            ("student-1", "Thursday", "A", 2, 3, "period_5", 2),
+        ]
+
+        for row in timetable:
+            conn.execute(
+                """
+                INSERT INTO timetable
+                (student_id, day, section, year, semester, period, course_id)
+                SELECT ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM timetable
+                    WHERE student_id = ?
+                      AND day = ?
+                      AND section = ?
+                      AND year = ?
+                      AND semester = ?
+                      AND period = ?
+                      AND course_id = ?
+                )
+                """,
+                (*row, *row),
+            )
+
         conn.commit()
+
     finally:
         _close_connection(conn)
-
 
 def check_connection() -> bool:
     """Check if the selected database backend is reachable."""
