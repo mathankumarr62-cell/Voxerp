@@ -1,0 +1,4 @@
+# Optional model-host runtime; install only on B's validated MLX host.
+# Exact mlx-vlm version/model revision must be supplied by B before deployment.
+-r requirements.txt
+mlx-vlm

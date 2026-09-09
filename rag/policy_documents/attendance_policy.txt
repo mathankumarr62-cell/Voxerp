@@ -1,0 +1,17 @@
+VOXERP ATTENDANCE POLICY
+
+Attendance operations include reading attendance and writing attendance.
+
+READ:
+- A student may read their own attendance.
+- A teacher may read attendance for students in their permitted class.
+
+WRITE:
+- Attendance writes are restricted to authorized users.
+- A teacher may mark attendance only for students within the teacher's permitted class.
+- Attendance writes require explicit user confirmation before the database is modified.
+
+SAFETY:
+- Never assume an ambiguous student target.
+- Never allow access based solely on retrieved policy text.
+- The database and deterministic RBAC checks are authoritative for actual permissions.

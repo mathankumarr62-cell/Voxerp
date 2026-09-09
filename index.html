@@ -20,10 +20,12 @@ button { font-size: 16px; padding: 14px 24px; border-radius: 8px; border: none; 
 <body>
 <h1>VoxERP — Voice ERP Assistant</h1>
 
-<label for="userSelect">Demo user:</label>
-<select id="userSelect">
-  <option value="">-- Select a user --</option>
-</select>
+<div id="demoUserPicker">
+  <label for="userSelect">Demo user:</label>
+  <select id="userSelect">
+    <option value="">-- Select a user --</option>
+  </select>
+</div>
 
 <div>
   <button id="micBtn">Start Listening</button>
@@ -45,6 +47,8 @@ var logEl = document.getElementById("log");
 var isListening = false;
 var isSpeaking = false;
 var users = [];
+var authenticatedIdentity = null;
+var demoUserPicker = document.getElementById("demoUserPicker");
 
 var pendingAction = null;
 var confirmAttempts = 0;
@@ -75,7 +79,10 @@ function speak(text, onDone) {
 }
 
 fetch("/users")
-  .then(function(res) { return res.json(); })
+  .then(function(res) {
+    if (!res.ok) throw new Error("demo users unavailable");
+    return res.json();
+  })
   .then(function(data) {
     users = data.users || [];
     users.forEach(function(u) {
@@ -87,9 +94,23 @@ fetch("/users")
     });
     logMsg("[users] loaded " + users.length + " demo users");
   })
-  .catch(function(err) {
-    logMsg("[users] failed to load: " + err);
-    statusEl.textContent = "Status: could not load demo users, check backend is running";
+  .catch(function() {
+    fetch("/me")
+      .then(function(res) {
+        if (!res.ok) throw new Error("authentication unavailable");
+        return res.json();
+      })
+      .then(function(identity) {
+        authenticatedIdentity = identity;
+        demoUserPicker.style.display = "none";
+        statusEl.textContent = "Status: signed in as " + identity.role;
+        logMsg("[auth] authenticated application user loaded");
+      })
+      .catch(function(err) {
+        logMsg("[auth] failed to load: " + err);
+        statusEl.textContent = "Status: sign in through the college authentication portal";
+        micBtn.disabled = true;
+      });
   });
 
 var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -159,7 +180,7 @@ micBtn.addEventListener("click", function() {
 
   if (!pendingAction) {
     var selectedId = userSelect.value;
-    if (!selectedId) {
+    if (!selectedId && !authenticatedIdentity) {
       statusEl.textContent = "Status: please select a demo user first";
       return;
     }
@@ -177,7 +198,7 @@ function sendQuery(text) {
   var selectedOption = userSelect.options[userSelect.selectedIndex];
   var role = selectedOption ? selectedOption.dataset.role : null;
 
-  if (!selectedId) {
+  if (!selectedId && !authenticatedIdentity) {
     statusEl.textContent = "Status: please select a demo user first";
     return;
   }
@@ -190,7 +211,7 @@ function sendQuery(text) {
   fetch("/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: text, user_id: selectedId, role: role }),
+    body: JSON.stringify(authenticatedIdentity ? { text: text } : { text: text, user_id: selectedId, role: role }),
     signal: controller.signal
   })
     .then(function(res) {
@@ -203,8 +224,8 @@ function sendQuery(text) {
       logMsg("[backend] reply: " + reply);
       statusEl.textContent = "Status: idle";
 
-      if (data.requires_confirmation && data.pending) {
-        pendingAction = data.pending;
+      if (data.requires_confirmation && (data.pending || data.confirmation_token)) {
+        pendingAction = data.confirmation_token || data.pending;
         confirmAttempts = 0;
         speak(reply, function() {
           if (recognition && !isListening) {
@@ -270,7 +291,7 @@ function sendConfirm(decision) {
   fetch("/confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ confirm: decision, pending: action })
+    body: JSON.stringify({ confirm: decision, confirmation_token: action, user_id: authenticatedIdentity ? undefined : userSelect.value })
   })
     .then(function(res) { return res.json(); })
     .then(function(data) {
