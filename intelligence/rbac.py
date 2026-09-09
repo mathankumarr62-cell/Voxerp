@@ -26,15 +26,28 @@ class DataRouter:
     SQL_TABLES = {"students", "marks", "attendance", "timetable", "exams"}
 
     def route(self, intent: Dict[str, Any], text: str = "") -> str:
+        """
+        Select the data source without allowing an academic-table
+        classification to override an explicit policy request.
+
+        Priority:
+        1. Explicit policy intent.
+        2. Explicit policy/rule language in the user's request.
+        3. Known SQL table.
+        4. Safe default to SQL for supported structured-data requests.
+        """
         table = intent.get("table") if isinstance(intent, dict) else None
+
         if table == "policy":
             return "rag"
-        if table in self.SQL_TABLES:
-            return "sql"
 
         lowered = (text or "").strip().lower()
+
         if any(keyword in lowered for keyword in self.RAG_KEYWORDS):
             return "rag"
+
+        if table in self.SQL_TABLES:
+            return "sql"
 
         return "sql"
 
@@ -69,12 +82,41 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
 
     if action == "policy_query":
         if table != "policy":
-            return {"allowed": False, "reason": "invalid_intent", "message": "I couldn't understand that request."}
-        # Policy questions are not protected student data. RAG supplies
-        # knowledge context only; this does not grant access to any SQL
-        # table or student record.
-        return {"allowed": True, "reason": None, "message": None, "target_student_id": None}
+            return {
+                "allowed": False,
+                "reason": "invalid_intent",
+                "message": "I couldn't understand that request.",
+            }
 
+        # RAG/policy retrieval must never bypass deterministic RBAC.
+        # A student explicitly referring to another student must be denied.
+        if normalized_role == "student":
+            target_student_id = _resolve_target_student_id(filters)
+
+            if target_student_id is not None and target_student_id != user_id:
+                return {
+                    "allowed": False,
+                    "reason": "unauthorized_target",
+                    "message": "You can only access your own data.",
+                    "target_student_id": target_student_id,
+                }
+
+            if _mentions_other_student(text or ""):
+                return {
+                    "allowed": False,
+                    "reason": "unauthorized_target",
+                    "message": "You can only access your own data.",
+                    "target_student_id": None,
+                }
+
+        # Policy questions without another-student targeting are safe.
+        # RAG supplies knowledge context only; it does not grant SQL access.
+        return {
+            "allowed": True,
+            "reason": None,
+            "message": None,
+            "target_student_id": None,
+        }
     if normalized_role == "student":
         target_student_id = _resolve_target_student_id(filters)
         self_reference = _is_self_reference(text or "")
@@ -173,6 +215,14 @@ def _is_self_reference(text: str) -> bool:
         "show me my",
         "show me myself",
         "me my",
+
+        # Explicit self-targeted write references.
+        # Keep this bounded to attendance/write-style commands so a generic
+        # occurrence of "me" is never treated as authorization by itself.
+        "mark me",
+        "record me",
+        "set me",
+        "update me",
 
         # First-person references.
         " i ",
