@@ -282,21 +282,21 @@ class DbAdapterWriteTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             mark_attendance("student-1", "", "2026-09-01", "present", "teacher-1")
 
-    def test_mark_attendance_not_found_for_unknown_student(self):
-        """Test mark_attendance returns not_found for unknown student."""
+    def test_mark_attendance_forbidden_when_real_writes_disabled(self):
+        """Test mark_attendance blocks real writes when disabled."""
         result = mark_attendance(
             "999999999", "DBMS", "2026-09-01", "present", "teacher-1"
         )
-        self.assertEqual(result["status"], "not_found")
+        self.assertEqual(result["status"], "forbidden")
 
-    def test_mark_attendance_not_found_for_unknown_course(self):
-        """Test mark_attendance returns not_found for unknown course."""
+    def test_mark_attendance_forbidden_when_real_writes_disabled_unknown_course(self):
+        """Test mark_attendance blocks real writes before course lookup."""
         # This test assumes there's a real student but NONEXISTENT_XYZ course doesn't exist
         # We'll catch the not_found for student first, but the logic should work
         result = mark_attendance(
             "999999999", "NONEXISTENT_XYZ", "2026-09-01", "present", "teacher-1"
         )
-        self.assertEqual(result["status"], "not_found")
+        self.assertEqual(result["status"], "forbidden")
 
 
 @unittest.skipUnless(str(os.getenv("VOXERP_USE_REAL_DB", "False")).lower() in {"1", "true", "yes", "on"}, "Real MariaDB integration test")
