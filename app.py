@@ -16,7 +16,7 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 db_adapter.initialize_database()
 intent_engine = IntentEngine()
 
-if intent_engine.client is None:
+if not intent_engine.gemma_available and intent_engine.client is None:
     try:
         from tests.test_person_b import FakeGeminiClient
         intent_engine.client = FakeGeminiClient()
