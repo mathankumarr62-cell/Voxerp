@@ -63,10 +63,9 @@ Write requests first return a signed confirmation token. Tokens expire after fiv
 python3 manage.py check
 python3 manage.py test api.tests
 python3 -m unittest tests.test_person_b tests.test_person_b_additional
-python3 -m unittest tests.test_app tests.test_offline_mode
 ```
 
-The last command exercises the retained Flask compatibility layer in forced offline mode. New deployments use Django via `manage.py`; Flask remains only while those legacy tests exist.
+The Django API and security test suite is the active validation path. New deployments use Django via `manage.py`.
 
 ## Troubleshooting
 

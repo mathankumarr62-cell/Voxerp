@@ -531,7 +531,7 @@ class PersonBComprehensiveTests(unittest.TestCase):
         """Attendance write intent requires a subject to be extracted."""
         intent = self.engine.parse("Mark me absent in DBMS", "student", self.schema_map)
         # Should extract subject
-        # (The app.py handler will ask for subject if it's missing)
+        # The API layer will ask for the subject if it's missing.
         self.assertEqual(intent["action"], "write")
         self.assertEqual(intent["table"], "attendance")
 

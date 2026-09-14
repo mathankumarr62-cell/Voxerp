@@ -1699,5 +1699,5 @@ def build_schema_map() -> Dict[str, Any]:
 
 
 def _connect():
-    """Backward-compatible alias for app.py and older callers."""
+    """Backward-compatible alias for older callers."""
     return _get_connection()

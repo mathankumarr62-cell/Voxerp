@@ -1,7 +1,4 @@
 Django>=5.1,<5.3
-# Flask remains temporarily for the legacy app.py test-compatibility surface.
-Flask==2.3.2
-Werkzeug<3.0
 mariadb==1.1.14
 python-dotenv==1.0.0
 pytest==7.4.0
