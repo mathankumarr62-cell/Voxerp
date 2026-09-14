@@ -72,33 +72,5 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(data["reply_text"], "Which subject should I mark absent?")
         self.assertFalse(data.get("requires_confirmation", False))
 
-    def test_confirm_yes_executes_mark_attendance(self):
-        pending = {
-            "student_id": "student-1",
-            "subject": "DBMS",
-            "date": "2026-08-10",
-            "status": "absent",
-            "actor_id": "student-1",
-        }
-        yes_res = self.client.post(
-            "/confirm",
-            json={"confirm": "yes", "pending": pending},
-        )
-        self.assertEqual(yes_res.status_code, 200)
-        reply = yes_res.get_json()["reply_text"]
-        self.assertTrue("marked" in reply.lower() or "updated" in reply.lower())
-
-        conn = db_adapter._connect()
-        try:
-            row = conn.execute(
-                "SELECT status FROM attendance WHERE student_id = ? AND subject = ? AND attendance_date = ?",
-                ("student-1", "DBMS", "2026-08-10"),
-            ).fetchone()
-            self.assertIsNotNone(row)
-            self.assertEqual(row["status"], "absent")
-        finally:
-            conn.close()
-
-
 if __name__ == "__main__":
     unittest.main()

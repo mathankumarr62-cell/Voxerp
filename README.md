@@ -1,64 +1,76 @@
-# VoxERP — Person A Deliverable
+# VoxERP
 
-This package implements the Person A data-layer foundation for the VoxERP sprint demo.
+VoxERP is a Django-based, voice-enabled academic ERP assistant. It answers only supported academic-data and policy questions; it is not a general chatbot.
 
-## Included pieces
+## Architecture
 
-- SQLite-backed mock database with seed data for students, subjects, attendance, marks, timetable, demo users, and a write log
-- Adapter functions for reading and writing attendance data
-- Normalization for subject names so inputs like "DBMS", "dbms", and "DB MS" resolve consistently
-- Explicit result shapes for the two important edge cases:
-  - "not_found" for unknown students or subjects
-  - "no_data" when the student exists but no records are present
-- A schema map generator that exposes the available tables and columns to the rest of the team
+`Django` owns login, sessions, CSRF protection, the web UI, and the JSON API. `IntentEngine` uses local Gemma to produce validated intent JSON. Deterministic `RBAC` authorizes that intent before the `DataRouter` selects either SQL or policy RAG. `db_adapter.py` is the only ERP integration layer and reads the existing MariaDB ERP schema. Policy documents in `rag/policy_documents/` are retrieval-only and can never grant access. Browser speech APIs provide optional STT/TTS; text input always remains available.
 
-## Adapter API
+Django's local SQLite database (`voxerp_app.sqlite3`) is for users and sessions only. It is never used as the academic ERP database and Django migrations must never target the college MariaDB instance.
 
-- `get_attendance(student_id, subject)`
-- `get_marks(student_id, subject)`
-- `get_timetable(student_id)`
-- `mark_attendance(student_id, subject, date, status)`
+## Setup
 
-## Quick start
+Use Python 3.11+ and a virtual environment:
 
 ```bash
-python db_adapter.py
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+cp .env.example .env
+python3 manage.py migrate
+python3 manage.py createsuperuser
+python3 manage.py runserver
 ```
 
-The module initializes the SQLite database, seeds the demo data, and prints a short sample of the generated schema map.
+For a local HTTP demo set `DEBUG=True` in your uncommitted `.env`; keep it `False` in deployment. Create each Django account with a username matching its ERP student ID (for example `student-1`). A staff account or a member of the `teacher` group is treated as a teacher, but remains denied until a verified teacher-to-class mapping exists.
 
+Open `http://127.0.0.1:8000/`, sign in, and use the text box or microphone. Chrome-family browsers normally provide the Web Speech API. Other browsers show a clear fallback message and retain the text interface.
 
-## VoxERP — Person C Deliverable
+## Configuration and ERP safety
 
-This package implements the voice interface, Flask routing, and end-to-end wiring for the VoxERP sprint demo.
+Copy `.env.example`; it contains placeholders only. Configure `DJANGO_SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, and the `DB_*` values outside version control.
 
-### Included pieces
+`VOXERP_USE_REAL_DB=True` enables adapter reads from the private MariaDB ERP. `VOXERP_ALLOW_REAL_WRITES` must remain `False` during development and testing. `VOXERP_OFFLINE_MODE=True` forces the isolated SQLite fixture, including when a real database is configured. Never expose MariaDB port 3306 publicly.
 
-- Web Speech API integration (`index.html`) — speech-to-text for voice input, speech synthesis for spoken replies
-- Flask backend (`app.py`) exposing the shared `/query` contract: `POST /query` takes `{text, user_id, role}`, returns `{reply_text}`
-- `/users` route — serves the demo user list (id, role, name) for the frontend dropdown
-- `/confirm` route — handles the yes/no confirmation step for write actions, separate from the main query flow so a write is never committed without an explicit confirmation
-- Stub intent parser and stub RBAC layer (keyword-based, documented below) standing in for Person B's real Gemini-based intent engine and RBAC logic — same input/output shape, swappable without touching the frontend or routes
-- Full write-confirmation flow: a write request never executes immediately. It returns a spoken confirmation question and a `pending` action; the frontend automatically re-listens for the answer
+Gemma is local and configured with `VOXERP_GEMMA_MODEL`, `VOXERP_GEMMA_MAX_TOKENS`, `VOXERP_GEMMA_TEMPERATURE`, and `VOXERP_GEMMA_REPETITION_PENALTY`. If MLX/Gemma is unavailable, intent parsing fails closed; no cloud model or API key is required for the normal path.
 
-### Edge cases handled
+## API
 
-- Mic permission denied → visible status message, not a silent failure
-- STT returns nothing / times out → spoken "I didn't catch that, try again," no empty request sent to backend
-- Backend request times out (10s) or errors → spoken fallback, no infinite spinner
-- User speaks while TTS is still talking → new mic input is ignored until playback finishes
-- Unclear confirmation reply (not an exact yes/no) → asked once more, then aborts with no changes made — confirmation never defaults to "yes" on an ambiguous answer, including doubled/echoed transcription
-- No demo user selected before a query → blocked client-side with a clear message
+All API calls require a Django session and CSRF token.
 
-### Routes
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /` | Authenticated assistant dashboard |
+| `GET /users` | Authenticated current-user compatibility identity |
+| `POST /api/query/` | Submit `{ "text": "..." }` |
+| `POST /api/confirm/` | Submit `{ "confirm": "yes|no", "pending": "signed-token" }` |
 
-- `GET /` — serves the frontend
-- `GET /users` — returns demo user list
-- `POST /query` — takes `{text, user_id, role}`, returns `{reply_text}`, or `{reply_text, requires_confirmation, pending}` for write actions awaiting confirmation
-- `POST /confirm` — takes `{confirm: "yes"|"no", pending: {...}}`, commits or cancels the pending write
+Write requests first return a signed confirmation token. Tokens expire after five minutes, are bound to the authenticated user, are consumed once, and are reauthorized immediately before a write. A “no” response never writes.
 
-### Stub layers (documented per the sprint plan's "what's out" section)
+## Security rules
 
-The intent parser (`parse_intent`) and RBAC (`apply_rbac_read` / `apply_rbac_write`) in `app.py` are simple keyword-matching stubs, not the real Gemini-based intent engine or full RBAC logic Person B is responsible for. They follow the same `{action, table, filters}` contract so Person B's real implementation can be dropped in without changing any frontend or routing code. Current stub RBAC always restricts a student to their own `student_id`; a teacher role can target another student by name in a write ("mark Vijay absent"), but read RBAC does not yet do class-level scoping — documented as Phase 2 alongside the rest of the real RBAC.
+- Client-supplied roles and user IDs are never used by Django authorization.
+- Students can access only their own marks, attendance, and timetable.
+- Explicit other or unknown students are denied; ambiguous targets fail closed.
+- Teachers fail closed unless their permitted scope can be verified.
+- RAG explains policy only; it cannot expose records or grant authorization.
+- Input is size-limited, JSON is validated, and model output is validated before use.
+- Errors are logged server-side without returning stack traces, credentials, prompts, or tokens.
 
-### Quick start
+## Testing
+
+```bash
+python3 manage.py check
+python3 manage.py test api.tests
+python3 -m unittest tests.test_person_b tests.test_person_b_additional
+python3 -m unittest tests.test_app tests.test_offline_mode
+```
+
+The last command exercises the retained Flask compatibility layer in forced offline mode. New deployments use Django via `manage.py`; Flask remains only while those legacy tests exist.
+
+## Troubleshooting
+
+- **Redirected to login:** create/sign in to a Django user first.
+- **Voice unavailable:** grant browser microphone permission or use text input.
+- **Gemma unavailable:** install the Apple Silicon MLX stack appropriate to the host and model, or expect requests to fail safely as unsupported.
+- **Database unavailable:** verify private/Tailscale connectivity and `DB_*` values; never change write safety settings to diagnose a connection.

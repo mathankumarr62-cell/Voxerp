@@ -1,8 +1,13 @@
 .env
 .venv/
+.DS_Store
 
 voxerp.db
 
 __pycache__/
 *.pyc
 .pytest_cache/
+voxerp_app.sqlite3
+*.backup
+*.before-*
+Voxerp-current.zip

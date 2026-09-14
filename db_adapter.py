@@ -29,6 +29,10 @@ def _as_bool(value: Optional[str], default: bool = False) -> bool:
 
 
 def _real_db_enabled() -> bool:
+    # Presentation/offline mode is an explicit request to use only the local
+    # fixture; it must never reach a configured college ERP database.
+    if _as_bool(os.getenv("VOXERP_OFFLINE_MODE"), default=False):
+        return False
     return _as_bool(os.getenv("VOXERP_USE_REAL_DB"), default=False)
 
 
