@@ -56,3 +56,13 @@ voxerp_*.db
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Local database, backups and manual production probes
+*.sqlite3
+*.sqlite3-*
+*.manual-backup
+*_backup.py
+check_attendance_db.py
+transaction_test.py
+transaction_engine_test.py
+tests/test_attendance_write_transaction.py

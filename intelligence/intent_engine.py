@@ -957,7 +957,7 @@ Classification rules:
                         # Remove conversational prefixes that are not part
                         # of the subject.
                         candidate = re.sub(
-                            r"^(?:what\s+are|what\s+is|show|give|tell\s+me|"
+                            r"^(?:what(?:'s|\s+are|\s+is)|show(?:\s+me)?|give|tell\s+me|"
                             r"get|display)\s+(?:my\s+)?",
                             "",
                             candidate,
@@ -1008,6 +1008,11 @@ Classification rules:
                     if candidate.lower() not in {"show", "me", "my", "the"}:
                         student_name = IntentEngine._sanitize_student_name(candidate)
 
+            # A token already extracted as the requested course must never be
+            # repurposed as a student target ("Tell me my DBMS marks").
+            if subject and student_name and student_name.lower() == subject.lower():
+                student_name = None
+
             return IntentEngine._validate_intent({
                 "action": "read",
                 "table": "marks",
@@ -1038,7 +1043,7 @@ Classification rules:
 
                 # Remove common conversational prefixes.
                 candidate = re.sub(
-                    r"^(?:what\s+is|what\s+are|show|give|tell\s+me|"
+                    r"^(?:what(?:'s|\s+is|\s+are)|show(?:\s+me)?|give|tell\s+me|"
                     r"get|display)\s+(?:my\s+)?",
                     "",
                     candidate,

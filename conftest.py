@@ -8,7 +8,7 @@ os.environ["VOXERP_USE_REAL_DB"] = "False"
 os.environ["VOXERP_ALLOW_REAL_WRITES"] = "False"
 os.environ["VOXERP_INITIALIZE_DATABASE"] = "False"
 os.environ["VOXERP_ENV"] = "development"
-os.environ["VOXERP_OFFLINE_MODE"] = "True"
+os.environ["VOXERP_OFFLINE_MODE"] = "False"
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
@@ -22,6 +22,17 @@ def _blocked(*args, **kwargs):
 
 mariadb.connect = _blocked
 socket.socket.connect = _blocked
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_academic_database(tmp_path, monkeypatch, request):
+    if request.cls and hasattr(request.cls, "_test_db_file"):
+        return  # This adapter test class owns its own database lifecycle.
+    import db_adapter
+    monkeypatch.setattr(db_adapter, "_DB_FILE", str(tmp_path / "academic.sqlite3"))
+    db_adapter.initialize_database()
 
 def pytest_sessionfinish(session, exitstatus):
     if _attempts or any(name in sys.modules for name in ("transaction_test", "transaction_engine_test")):

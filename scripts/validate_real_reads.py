@@ -3,7 +3,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import secrets
 import socket
 import sys
 
@@ -18,20 +17,17 @@ def main():
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     if not os.getenv("DB_USER") or not os.getenv("DB_PASSWORD"):
-        print("SKIP: configured database credentials are unavailable")
+        print("ENVIRONMENT CONFIGURATION FAILURE: database credentials unavailable")
         return 2
     os.environ.update(VOXERP_USE_REAL_DB="True", VOXERP_ALLOW_REAL_WRITES="False",
                       VOXERP_INITIALIZE_DATABASE="False", VOXERP_ENV="production",
-                      VOXERP_OFFLINE_MODE="False", VOXERP_AUTH_MODE="proxy",
-                      VOXERP_TRUSTED_PROXY_CIDRS="127.0.0.1/32",
-                      VOXERP_ROLE_GROUPS="read-validation-students:student",
-                      VOXERP_PENDING_SECRET=secrets.token_urlsafe(32))
+                      VOXERP_OFFLINE_MODE="False")
     try:
         with socket.create_connection((os.getenv("DB_HOST", "localhost"), int(os.getenv("DB_PORT", "3306"))), timeout=5):
             pass
         print("PASS: TCP database port")
     except OSError:
-        print("FAIL: TCP connectivity (no authentication attempted)")
+        print("DATABASE AVAILABILITY / NETWORK FAILURE: TCP unavailable; firewall/Tailscale cause unverified")
         return 1
     import mariadb
     import db_adapter
@@ -49,7 +45,7 @@ def main():
         conn = readonly_connection()
         conn.close()
     except mariadb.Error as exc:
-        category = {1045: "account/host or authentication denied (DBA must distinguish)",
+        category = {1045: "DATABASE AUTHENTICATION FAILURE: account/host or credentials denied",
                     1130: "host authorization denied", 1044: "database permission denied",
                     1049: "database not found"}.get(exc.errno, "database connection/configuration")
         print("FAIL:", category)
@@ -72,25 +68,21 @@ def main():
             ok = any(str(r["exam_name"]).replace(" ", "").upper() == label and r["marks_obtained"] == score and r["max_marks"] == 100 for r in rows)
             print(("PASS:" if ok else "FAIL:"), "historical marks expectation", label)
             passed = passed and ok
-    import app
-    from intelligence.intent_engine import IntentEngine
-    class Models:
-        def generate_content(self, **kwargs):
-            return type("Response", (), {"text": json.dumps(intent)})()
-    app.intent_engine = IntentEngine(client=type("Client", (), {"models": Models()})())
-    headers = {"X-Forwarded-User": "read-validation-principal",
-               "X-Forwarded-Student-Id": args.student_id,
-               "X-Forwarded-Groups": "read-validation-students"}
-    client = app.app.test_client()
+    from api.services import Identity, VoxERPService
+    from intelligence.response_generator import generate_response
+    class Engine:
+        def parse(self, *args):
+            return intent
+    service = VoxERPService(Engine())
     for table in results:
         intent = {"action": "read", "table": table, "filters": {"subject": args.subject if table != "timetable" else None}}
-        response = client.post("/query", headers=headers, json={"text": "Show my " + table})
-        ok = response.status_code == 200 and response.json["reply_text"] == app.generate_response(results[table])
-        print(("PASS:" if ok else "FAIL:"), "Flask/RBAC/adapter", table, "(inference stubbed)")
+        response = service.query(Identity(args.student_id, "student"), "Show my " + table)
+        ok = response["status"] == 200 and response["reply_text"] == generate_response(results[table])
+        print(("PASS:" if ok else "FAIL:"), "Django service/RBAC/adapter", table, "(inference stubbed)")
         passed = passed and ok
     intent = {"action": "read", "table": "marks", "filters": {"student_id": "other-student"}}
-    response = client.post("/query", headers=headers, json={"text": "Show another student's marks"})
-    ok = response.status_code == 403
+    response = service.query(Identity(args.student_id, "student"), "Show another student's marks")
+    ok = "only access your own" in response["reply_text"]
     print(("PASS:" if ok else "FAIL:"), "cross-student rejection")
     print("Real ERP writes: disabled; no write operation invoked")
     return 0 if passed and ok else 1

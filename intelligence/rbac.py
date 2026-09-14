@@ -121,6 +121,18 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
         target_student_id = _resolve_target_student_id(filters)
         self_reference = _is_self_reference(text or "")
 
+        # An explicit name is still an explicit attempt to target somebody
+        # else even when that name cannot be resolved (for example because
+        # the ERP lookup is temporarily unavailable).  Do not downgrade it
+        # into an ambiguous/self request and accidentally broaden access.
+        explicit_name = filters.get("student_name") if isinstance(filters, dict) else None
+        if target_student_id is None and isinstance(explicit_name, str) and explicit_name.strip():
+            return {
+                "allowed": False,
+                "reason": "unauthorized_target",
+                "message": "You can only access your own data.",
+            }
+
         if target_student_id is None:
             lowered_text = (text or "").lower()
             if "another student" in lowered_text or "another student's" in lowered_text:
