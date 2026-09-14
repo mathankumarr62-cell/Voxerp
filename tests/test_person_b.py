@@ -1,7 +1,9 @@
 import json
 import os
 import re
+import sys
 import unittest
+from unittest.mock import patch
 
 from db_adapter import build_schema_map
 from intelligence.intent_engine import IntentEngine
@@ -462,29 +464,19 @@ class PersonBComprehensiveTests(unittest.TestCase):
         self.assertEqual(intent["action"], "unsupported")
         self.assertEqual(intent["table"], "unsupported")
 
-    def test_no_gemini_client_fails_closed(self) -> None:
-        """Intent engine fails safely when no Gemini client is available."""
-        import os
-
-        class AlwaysNoneClient:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError("No client should be constructed in this test")
-
-        old_key = os.environ.pop("GEMINI_API_KEY", None)
-        old_genai_client = None
-        import intelligence.intent_engine as ie_module
-        old_genai_client = ie_module.genai.Client
-        ie_module.genai.Client = AlwaysNoneClient
-        try:
+    def test_no_intent_engine_available_fails_closed(self) -> None:
+        """Fail closed only when both local Gemma and test Gemini are unavailable."""
+        # client=None means there is no injected legacy Gemini compatibility
+        # client. Hide MLX for this construction so it cannot load local Gemma
+        # (or download anything) even on a developer machine with the model.
+        with patch.dict(sys.modules, {"mlx_vlm": None}):
             engine = IntentEngine(client=None)
-            self.assertIsNone(engine.client)
-            intent = engine.parse("What's my marks?", "student", self.schema_map)
-            self.assertEqual(intent["action"], "unsupported")
-            self.assertEqual(intent["table"], "unsupported")
-        finally:
-            ie_module.genai.Client = old_genai_client
-            if old_key is not None:
-                os.environ["GEMINI_API_KEY"] = old_key
+
+        self.assertIsNone(engine.client)
+        self.assertFalse(engine.gemma_available)
+        intent = engine.parse("What's my marks?", "student", self.schema_map)
+        self.assertEqual(intent["action"], "unsupported")
+        self.assertEqual(intent["table"], "unsupported")
 
     # =========================================================================
     # Requirement 11: Attendance write requests requiring confirmation flow
