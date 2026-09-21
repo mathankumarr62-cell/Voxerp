@@ -181,7 +181,11 @@ class IntentEngine:
 
                 intent = self._validate_intent(parsed)
 
-                # Recover explicit targets that Gemma may omit.
+                # Recover explicit entities that Gemma may omit or misclassify.
+                intent = self._recover_gemma_entities(clean_text, intent)
+
+                # Preserve the existing target guard for other supported ID forms
+                # and policy intents as well as the academic recovery above.
                 intent = self._apply_explicit_student_target(clean_text, intent)
 
                 # Existing deterministic safety layer remains active.
@@ -231,6 +235,155 @@ class IntentEngine:
 
         return self._fallback_intent()
 
+
+    def _recover_gemma_entities(
+        self,
+        text: str,
+        intent: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Normalize explicit entities from the user's text after Gemma
+        classification.
+
+        Explicit, unambiguous user targets take precedence over an
+        incorrect Gemma entity assignment. Authorization remains the
+        responsibility of RBAC.
+        """
+        if not isinstance(text, str) or not isinstance(intent, dict):
+            return intent
+
+        filters = intent.get("filters")
+        if not isinstance(filters, dict):
+            return intent
+
+        table = intent.get("table")
+        if table not in {"marks", "attendance", "timetable"}:
+            return intent
+
+        # ------------------------------------------------------------
+        # 1. Explicit numeric student ID
+        # ------------------------------------------------------------
+        student_match = re.search(
+            r"\bstudent(?:_id|-id)?\s*[-:]?\s*(\d+)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        if student_match:
+            filters["student_id"] = student_match.group(1)
+            filters["student_name"] = None
+
+            # Gemma may have classified "student 2" as the subject.
+            subject = filters.get("subject")
+            if isinstance(subject, str) and re.fullmatch(
+                r"student\s*[-:]?\s*\d+",
+                subject.strip(),
+                flags=re.IGNORECASE,
+            ):
+                filters["subject"] = None
+
+            return intent
+
+        # ------------------------------------------------------------
+        # 2. Explicit named student
+        # ------------------------------------------------------------
+        # Supported:
+        #   Show Bob Smith's marks
+        #   Show Alice Johnson attendance
+        #
+        # Restrict this to a clear "show [name] operation" structure.
+        named_match = re.search(
+            r"\bshow\s+(?:me\s+)?"
+            r"([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+){1,3})"
+            r"(?:['’]s)?\s+"
+            r"(?:marks?|scores?|attendance|timetable|schedule)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        if named_match:
+            candidate = named_match.group(1).strip()
+
+            # "my <subject>" is self-reference, not a student name.
+            # Do not let the multi-word-name recovery consume it.
+            self_match = re.match(
+                r"^(?:my|me|myself)\b\s*(.*)$",
+                candidate,
+                flags=re.IGNORECASE,
+            )
+
+            if self_match:
+                remainder = self_match.group(1).strip()
+
+                if table in {"marks", "attendance"} and remainder:
+                    # Preserve a valid subject already extracted by Gemma.
+                    if not filters.get("subject"):
+                        filters["subject"] = remainder
+
+                filters["student_name"] = None
+                filters["student_id"] = None
+
+                return intent
+
+            # Remove possessive punctuation if it was included.
+            candidate = re.sub(r"['’]s$", "", candidate).strip()
+
+            candidate = self._sanitize_student_name(candidate)
+
+            if candidate:
+                filters["student_name"] = candidate
+                filters["student_id"] = None
+
+                # The explicit student name cannot simultaneously be
+                # the requested subject.
+                filters["subject"] = None
+
+                return intent
+
+        # ------------------------------------------------------------
+        # 3. Self-reference protection
+        # ------------------------------------------------------------
+        # "Show my Distributed Computing attendance"
+        # "Show my timetable"
+        #
+        # These refer to the authenticated user, not a named student.
+        if re.search(
+            r"\b(?:my|me|myself)\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            # Self-reference must not destroy a valid subject extracted
+            # by Gemma. Only clear a student target when it is actually
+            # a malformed self-reference.
+            student_name = filters.get("student_name")
+
+            if isinstance(student_name, str):
+                normalized_name = student_name.strip().lower()
+
+                if normalized_name in {"my", "me", "myself"}:
+                    filters["student_name"] = None
+
+        # ------------------------------------------------------------
+        # 4. Course-code recovery
+        # ------------------------------------------------------------
+        # Gemma may classify AD3491 as student_id.
+        if table in {"marks", "attendance"} and not filters.get("subject"):
+            current_student_id = filters.get("student_id")
+
+            if current_student_id:
+                candidate = str(current_student_id).strip()
+
+                if (
+                    not candidate.isdigit()
+                    and re.fullmatch(
+                        r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9._-]+",
+                        candidate,
+                    )
+                ):
+                    filters["subject"] = candidate
+                    filters["student_id"] = None
+
+        return intent
 
     def _apply_explicit_student_target(
         self,
@@ -581,9 +734,16 @@ Classification rules:
         if lower in forbidden:
             return None
 
-        # If the token contains whitespace or looks like a sentence fragment,
-        # avoid treating it as a name.
-        if " " in candidate or any(c in candidate for c in "?/;:"):
+        # Allow legitimate multi-word names while rejecting sentence-like
+        # fragments and unsafe punctuation.
+        if any(c in candidate for c in "?/;:"):
+            return None
+
+        name_parts = candidate.split()
+        if not 1 <= len(name_parts) <= 4:
+            return None
+
+        if not all(re.fullmatch(r"[A-Za-z][A-Za-z'-]*", part) for part in name_parts):
             return None
 
         return candidate

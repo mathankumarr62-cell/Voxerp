@@ -1,4 +1,6 @@
-# Optional model-host runtime; install only on B's validated MLX host.
-# Exact mlx-vlm version/model revision must be supplied by B before deployment.
+# Validated on Apple Silicon with Python 3.13; see requirements-demo-lock.txt
+# for the full observed environment and DEPLOYMENT.md for the model revision.
 -r requirements.txt
-mlx-vlm
+mlx-vlm==0.7.0
+mlx==0.32.2
+mlx-metal==0.32.2

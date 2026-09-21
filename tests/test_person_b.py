@@ -285,6 +285,113 @@ class PersonBComprehensiveTests(unittest.TestCase):
         self.assertEqual(result["reason"], "ambiguous_target")
 
     # =========================================================================
+    def test_recover_multiword_student_name(self) -> None:
+        """Explicit multi-word student names override malformed entities."""
+        engine = IntentEngine(client=FakeGeminiClient())
+
+        intent = {
+            "action": "read",
+            "table": "marks",
+            "filters": {
+                "student_id": None,
+                "student_name": "Smith",
+                "subject": "Bob Smith's",
+                "date": None,
+                "status": None,
+                "period": None,
+            },
+        }
+
+        result = engine._recover_gemma_entities(
+            "Show Bob Smith's marks",
+            intent,
+        )
+
+        self.assertEqual(result["filters"]["student_name"], "Bob Smith")
+        self.assertIsNone(result["filters"]["student_id"])
+        self.assertIsNone(result["filters"]["subject"])
+
+    def test_recover_second_multiword_student_name(self) -> None:
+        """Another multi-word name remains distinct from the subject."""
+        engine = IntentEngine(client=FakeGeminiClient())
+
+        intent = {
+            "action": "read",
+            "table": "marks",
+            "filters": {
+                "student_id": None,
+                "student_name": "Johnson",
+                "subject": "Alice Johnson's",
+                "date": None,
+                "status": None,
+                "period": None,
+            },
+        }
+
+        result = engine._recover_gemma_entities(
+            "Show Alice Johnson's marks",
+            intent,
+        )
+
+        self.assertEqual(result["filters"]["student_name"], "Alice Johnson")
+        self.assertIsNone(result["filters"]["student_id"])
+        self.assertIsNone(result["filters"]["subject"])
+
+    def test_recover_numeric_student_id(self) -> None:
+        """Explicit numeric student targets override subject misclassification."""
+        engine = IntentEngine(client=FakeGeminiClient())
+
+        intent = {
+            "action": "read",
+            "table": "marks",
+            "filters": {
+                "student_id": None,
+                "student_name": None,
+                "subject": "student 2",
+                "date": None,
+                "status": None,
+                "period": None,
+            },
+        }
+
+        result = engine._recover_gemma_entities(
+            "Show student 2 marks",
+            intent,
+        )
+
+        self.assertEqual(result["filters"]["student_id"], "2")
+        self.assertIsNone(result["filters"]["student_name"])
+        self.assertIsNone(result["filters"]["subject"])
+
+    def test_recover_self_subject_without_destroying_valid_subject(self) -> None:
+        """'my <subject>' remains a self-query and preserves the subject."""
+        engine = IntentEngine(client=FakeGeminiClient())
+
+        intent = {
+            "action": "read",
+            "table": "attendance",
+            "filters": {
+                "student_id": None,
+                "student_name": None,
+                "subject": "Distributed Computing",
+                "date": None,
+                "status": None,
+                "period": None,
+            },
+        }
+
+        result = engine._recover_gemma_entities(
+            "Show my Distributed Computing attendance",
+            intent,
+        )
+
+        self.assertIsNone(result["filters"]["student_id"])
+        self.assertIsNone(result["filters"]["student_name"])
+        self.assertEqual(
+            result["filters"]["subject"],
+            "Distributed Computing",
+        )
+
     # Requirement 7: Question words never becoming student_name
     # =========================================================================
     def test_question_word_what_not_student_name(self) -> None:

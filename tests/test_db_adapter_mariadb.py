@@ -93,10 +93,12 @@ class DbAdapterConnectionTests(unittest.TestCase):
             if conn is not None:
                 conn.close()
 
-    def test_initialize_database_creates_tables(self):
-        """Test that initialize_database creates required tables."""
-        result = initialize_database()
-        self.assertEqual(result["status"], "ok")
+    def test_initialize_database_respects_disabled_writes(self):
+        """Live read validation must never create or seed ERP tables."""
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"VOXERP_ALLOW_REAL_WRITES": "False"}):
+            result = initialize_database()
+        self.assertEqual(result["status"], "disabled")
         self.assertIn("message", result)
 
 

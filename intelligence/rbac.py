@@ -174,8 +174,8 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
                 "allowed": False,
                 "reason": "teacher_scope_unknown",
                 "message": (
-                    "The current database does not define teacher "
-                    "class membership, so access is blocked safely."
+                    "A verified teacher identity and teaching scope are "
+                    "not configured, so access is blocked safely."
                 ),
             }
 
@@ -298,8 +298,9 @@ def _student_class(student_id: str) -> Optional[str]:
 def _teacher_permitted_class(user_id: str) -> Optional[str]:
     """Return a verified teacher class, or None when scope is unavailable.
 
-    The current MariaDB schema does not define a teacher-to-class mapping,
-    so teacher access must fail closed rather than guessing a class.
+    ERP enrollment/faculty relationships exist, but the authenticated teacher
+    identity and approved course/term permissions are not configured. A shared
+    class label alone cannot safely represent those scopes.
     """
     return None
 

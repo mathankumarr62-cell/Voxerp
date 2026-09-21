@@ -32,7 +32,7 @@ ASGI_APPLICATION = "config.asgi.application"
 
 # This database belongs solely to Django (auth, sessions and audit state).
 # db_adapter.py independently connects to the read-only external ERP database.
-DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "voxerp_app.sqlite3"}}
+DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": os.getenv("VOXERP_APP_DB", str(BASE_DIR / "voxerp_app.sqlite3"))}}
 AUTH_PASSWORD_VALIDATORS = []
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = os.getenv("TIME_ZONE", "Asia/Kolkata")
@@ -42,6 +42,7 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "login"
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG

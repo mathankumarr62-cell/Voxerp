@@ -1184,7 +1184,7 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
             conn = _get_connection()
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT year, semester, section FROM user_accounts_studentdetails WHERE id = %s LIMIT 1",
+                "SELECT year, semester, section, department_id FROM user_accounts_studentdetails WHERE id = %s LIMIT 1",
                 (student_id,),
             )
             student = cursor.fetchone()
@@ -1195,7 +1195,7 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
                     "message": f"I couldn't find student {student_id}",
                 }
 
-            student_year, student_semester, student_section = student
+            student_year, student_semester, student_section, student_department = student
             if year is None:
                 year = student_year
             if semester is None:
@@ -1208,10 +1208,10 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
                        fifth_period, sixth_period, seventh_period, eighth_period,
                        nineth_period, tenth_period
                 FROM course_management_periodallocation
-                WHERE year = %s AND semester = %s AND section = %s
+                WHERE year = %s AND semester = %s AND section = %s AND department_id = %s
                 ORDER BY FIELD(day, 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'), id
                 """,
-                (year, semester, student_section),
+                (year, semester, student_section, student_department),
             )
             allocations = cursor.fetchall()
             if not allocations:
@@ -1227,8 +1227,8 @@ def get_timetable(student_id: str, year: Optional[int] = None, semester: Optiona
                     if not course_code:
                         continue
                     cursor.execute(
-                        "SELECT id, course_code, title FROM course_management_course WHERE course_code = %s LIMIT 1",
-                        (course_code,),
+                        "SELECT id, course_code, title FROM course_management_course WHERE course_code = %s AND department_id = %s LIMIT 1",
+                        (course_code, student_department),
                     )
                     course = cursor.fetchone()
                     timetable_rows.append({
