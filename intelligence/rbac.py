@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional
 
 import db_adapter
 from rag.retriever import retrieve_policy
+from intelligence.scope import VerifiedScopeResolver
 
 
 class PolicyEngine:
@@ -56,7 +57,14 @@ policy_engine = PolicyEngine()
 data_router = DataRouter()
 
 
-def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str = "") -> Dict[str, Any]:
+def authorize_request(
+    user_id: str,
+    role: str,
+    intent: Dict[str, Any],
+    text: str = "",
+    *,
+    scope_resolver: Optional[VerifiedScopeResolver] = None,
+) -> Dict[str, Any]:
     """Return a structured authorization decision before any adapter call."""
     # Policy Engine retrieves context; deterministic RBAC remains authoritative.
     policy_result = policy_engine.evaluate(role, text)
@@ -67,7 +75,10 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
         return {"allowed": False, "reason": "missing_user", "message": "I couldn't identify the current user."}
 
     normalized_role = (role or "").strip().lower() if isinstance(role, str) else ""
-    if normalized_role not in {"student", "teacher"}:
+    accepted_roles = {"student", "teacher"}
+    if scope_resolver is not None:
+        accepted_roles.update({"hod", "admin"})
+    if normalized_role not in accepted_roles:
         return {"allowed": False, "reason": "invalid_role", "message": "I couldn't determine the user's role."}
 
     if not isinstance(intent, dict):
@@ -152,7 +163,7 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
 
         return {"allowed": True, "reason": None, "message": None, "target_student_id": target_student_id}
 
-    if normalized_role == "teacher":
+    if normalized_role in {"teacher", "hod", "admin"}:
         # Never treat the teacher's ID as a student ID.
         target_student_id = _resolve_target_student_id(filters)
 
@@ -164,6 +175,17 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
                 "reason": "ambiguous_target",
                 "message": "I couldn't safely determine which student you meant.",
             }
+
+        if scope_resolver is not None:
+            decision = scope_resolver.authorize(
+                user_id,
+                normalized_role,
+                _scope_operation(action, table),
+                target_student_id,
+                course_code=filters.get("subject") if isinstance(filters.get("subject"), str) else None,
+                section=filters.get("section") if isinstance(filters.get("section"), str) else None,
+            )
+            return decision.as_dict()
 
         # Find the teacher's assigned class.
         permitted_class = _teacher_permitted_class(user_id)
@@ -206,6 +228,12 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
         }
 
     return {"allowed": False, "reason": "invalid_role", "message": "I couldn't determine the user's role."}
+
+
+def _scope_operation(action: Any, table: Any) -> str:
+    if action == "write" and table == "attendance":
+        return "attendance_write"
+    return str(table or "")
 
 
 def _is_self_reference(text: str) -> bool:
