@@ -108,3 +108,101 @@ Tracked-file secret-pattern audit found no matches and no tracked SQL/database/Z
 6. Git publication: `git push -u origin fix/gemma-entity-recovery` reached GitHub outside the sandbox but failed with “Invalid username or token. Password authentication is not supported for Git operations.” Supply an authorized credential through the Git credential manager, then retry that exact non-force command. No remote change is claimed.
 
 See DEPLOYMENT.md for exact fresh-install and daily startup commands, passwords entered locally, query sequence, voice test, troubleshooting, and read-only verification. The final commit hash and actual push result are reported in the execution handoff; use `git log -1` to identify the checked-out release. No force push, bulk staging, backup deletion, or production ERP writes are authorized by this report.
+
+
+## Final local completion validation — 2026-09-22
+
+Canonical checkout: `/Users/vijayaguru/Developer/Voxerp`. Initial branch `main`,
+HEAD `5416f94b73b5f8239d2ad60450592248a0a958b5`, clean working tree. Cached
+`origin/main` was `c4043a84bb504eaa95637c6ee78b6d99858a573d`; no fetch or push was
+performed. The Desktop checkout's existing uncommitted work was left untouched.
+Completion branch: `fix/verified-erp-completion`; implementation commit
+`eb0cec07c28dec0a7f62ba159a166b771fd6b796`.
+
+Already working: Django authentication/CSRF/session boundary, dynamic student
+marks/course attendance/timetable, department-aware timetable filtering, signed
+single-use confirmation with reauthorization, policy isolation, local Gemma and
+browser text/speech wiring. Baseline was 214 passed, 26 live tests skipped,
+zero network/MariaDB attempts.
+
+Changes: explicit local-demo versus institutional identity boundary; current
+ERP active/discontinued checks; overall daily attendance; duplicate-aware hourly
+absence counts with conflicting-evidence denial; narrow absence-question entity
+recovery after local inference; pinned default cached model loading; stricter
+optional teacher batch/term/date/ambiguity checks; malformed-target/unsupported
+operation denial; removal of fixed expected demo marks from live validation.
+The real marks and timetable query implementations were preserved.
+
+### Exact checks
+
+| Check | Result |
+| --- | --- |
+| `.venv/bin/python -m pytest -q -p no:cacheprovider` | **268 passed, 26 skipped, 1 warning**, 13.46 seconds |
+| Offline suite network/MariaDB attempts | **0**; global guards make any attempted access fail the session |
+| Local-wrapper `python -m unittest tests.test_db_adapter_mariadb` | **26 tests, OK**, 0.070 seconds; writes disabled |
+| `python manage.py check` | **No issues (0 silenced)** |
+| `python manage.py migrate --check` | **Pass**, default auth DB and separate local-demo auth DB |
+| `python manage.py makemigrations --check --dry-run` | **No changes detected** |
+| `python -m compileall -q api config core intelligence rag voice scripts tests db_adapter.py` | **Pass**; changed/new files compiled again after final edit |
+| `git diff --check` | **Pass** |
+| Actual Gemma + authenticated Django + real SQL | **Pass**, four distinct students |
+| Chrome login, query submission, rendered marks, browser error check | **Pass**; no reported browser errors |
+
+The warning comes from Transformers audio mel-filter configuration; no stack
+versions were changed. Focused API, identity, scope, revocation, confirmation,
+policy isolation, voice lifecycle, Gemma recovery and security regressions are
+included in the full offline run. The 26 skipped cases were then run separately
+against the isolated clone, not silently counted as offline passes.
+
+Reproduce actual local inference and SQL validation with:
+
+```bash
+.venv/bin/python scripts/validate_completion.py
+```
+
+This script uses the existing local wrapper's loopback-only configuration,
+asserts server read-only mode and SELECT grants, and creates a disposable SQLite
+authentication database. It performs actual Django password login, CSRF/session
+requests, actual local Gemma inference, and SQL-backed comparisons for students
+1 and 2 (selected dynamically from populated active rows), 44 and 917. It checks
+marks against underlying consolidated CSV assessment fields, course-name/code
+attendance, overall daily attendance, hourly row identities and absence responses,
+exact-class timetable availability, unknown-course no-data, forged body identity,
+cross-student denial, and CSRF rejection. Changing the logged-in student changes
+the resulting academic answer. No expected academic score is hardcoded. This
+validator passed again after duplicate-aware hourly counting was added.
+
+Browser verification used installed agent-browser 0.27.0 and Google Chrome,
+a loopback server on port 8011, temporary demo credentials and a temporary auth
+DB. Login, dashboard controls, actual IT25201 marks query and result rendering
+were observed; the TTS UI entered playback state. This does **not** establish
+physical microphone capture or audible speaker output. The temporary browser,
+server and authentication state were cleaned up; the existing ERP server was
+left intact. Screenshots containing local academic data were not committed.
+
+Runtime: Python **3.13.12**, MLX **0.32.2**, mlx-vlm **0.7.0**, Django **5.2.17**;
+model `mlx-community/gemma-4-e4b-it-4bit`, revision
+`475b9088d29754a3379866cf5aeb6b41acd313c2`. Cached local inference was actually
+used; no cloud fallback or model/dependency replacement was introduced.
+
+Safety: `VOXERP_ALLOW_REAL_WRITES=False`; MariaDB listens on **127.0.0.1:3307**,
+server read-only mode is ON and the application account has SELECT only. Live
+validation intentionally accessed only this local ERP instance. Ordinary pytest
+made zero network/MariaDB attempts. No production DB, original SQL dump, private
+credentials or unrelated checkout was modified; no deployment or push occurred.
+
+### Remaining evidence boundaries
+
+The dump has 298 tables but zero authentication users/groups/student-login rows.
+Faculty employee and assignment joins are proven; institutional account binding,
+semantic role assignment, current HOD appointments and operation grants are not.
+Teacher/HOD/Admin academic access therefore remains disabled in the application.
+Passing synthetic scope-source tests does not establish those roles in the ERP.
+`AuthenticatedIdentityResolver` is the institutional integration point; production
+rejects the numeric-username demo convention. See SCHEMA_MAPPING.md for observed
+counts/relationships and the enabled operation matrix, and
+INSTITUTIONAL_AUTH_REQUIREMENTS.md for the missing owner-supplied contract.
+Physical microphone/speaker acceptance and production integration remain unverified.
+
+Documentation updated: README.md, DEPLOYMENT.md, SCHEMA_MAPPING.md,
+INSTITUTIONAL_AUTH_REQUIREMENTS.md, RELEASE_VALIDATION.md and `.env.example`.

@@ -282,3 +282,14 @@ FAIL-CLOSED pending authoritative institutional capability/scope
 
 Production ERP integration:
 PENDING institutional deployment access and approval
+
+
+## Completion-audit evidence, 2026-09-22
+
+The supplied dump's authentication users/groups/student-login tables are empty.
+Employee and assignment joins exist, but they do not complete institutional
+identity, role, operation and validity evidence. See SCHEMA_MAPPING.md's latest
+audit and operation matrix. `api.identity.AuthenticatedIdentityResolver` is the
+production integration point; production explicitly rejects the local numeric
+username convention. Student active/discontinued state is refreshed before
+real academic reads. Privileged integration remains fail-closed.

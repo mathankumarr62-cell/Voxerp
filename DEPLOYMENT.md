@@ -140,3 +140,28 @@ For deployment use Django WSGI/ASGI behind HTTPS, `VOXERP_ENV=production`, `DEBU
 - **No timetable for 917:** expected dataset gap, not grounds to return another department's schedule.
 - **Teacher/HOD/Admin denied:** expected until authoritative identity, term/course scope, and operation permissions are approved.
 - **Voice fails:** complete the manual hardware/browser permission checks; retain text input.
+
+
+## Identity and runtime clarification — 2026-09-22
+
+`local_demo.py run` sets `VOXERP_IDENTITY_MODE=local_demo`; use this wrapper for
+local real-data sessions. The authenticated numeric username is a provisioned
+demo convention only. Production deliberately rejects it until the institution
+implements the protected account mapping in `AuthenticatedIdentityResolver`.
+Do not bypass this guard by changing production to development mode.
+
+Default model loading also pins the cached revision documented above and never
+downloads at runtime. No MLX dependencies were changed. Explicit custom local
+model paths remain supported. `VOXERP_ALLOW_REAL_WRITES=False` is unchanged.
+Overall attendance returns daily records; period-count questions use recorded
+hourly history, with orphan course rows excluded and no invented current term.
+
+
+For reproducible multi-student SQL + real Gemma + Django password/CSRF validation:
+
+```bash
+.venv/bin/python scripts/validate_completion.py
+```
+
+It uses only the configured isolated loopback clone and disposable authentication
+state; it never resets existing passwords or writes academic records.
