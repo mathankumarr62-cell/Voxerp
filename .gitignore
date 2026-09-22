@@ -66,3 +66,11 @@ check_attendance_db.py
 transaction_test.py
 transaction_engine_test.py
 tests/test_attendance_write_transaction.py
+
+# Authorized local ERP clone and credentials (never commit academic data)
+.local-demo*/
+*.sql
+*.sql.gz
+*.before-*
+*.db.backup
+Voxerp-current.zip

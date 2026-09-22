@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--student-id", required=True)
     parser.add_argument("--subject", required=True)
+    parser.add_argument("--timetable-student-id", help="Separately approved student with a populated exact class timetable")
     args = parser.parse_args()
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -55,7 +56,7 @@ def main():
     results = {
         "marks": db_adapter.get_marks(args.student_id, args.subject),
         "attendance": db_adapter.get_attendance(args.student_id, args.subject),
-        "timetable": db_adapter.get_timetable(args.student_id),
+        "timetable": db_adapter.get_timetable(args.timetable_student_id or args.student_id),
     }
     passed = True
     for name, result in results.items():
@@ -76,7 +77,8 @@ def main():
     service = VoxERPService(Engine())
     for table in results:
         intent = {"action": "read", "table": table, "filters": {"subject": args.subject if table != "timetable" else None}}
-        response = service.query(Identity(args.student_id, "student"), "Show my " + table)
+        identity_id = (args.timetable_student_id or args.student_id) if table == "timetable" else args.student_id
+        response = service.query(Identity(identity_id, "student"), "Show my " + table)
         ok = response["status"] == 200 and response["reply_text"] == generate_response(results[table])
         print(("PASS:" if ok else "FAIL:"), "Django service/RBAC/adapter", table, "(inference stubbed)")
         passed = passed and ok

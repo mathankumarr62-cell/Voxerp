@@ -54,12 +54,22 @@ def test_hourly_and_daily_separate(real):
 def test_all_timetable_periods_and_empty_slots(real):
     allocation = (1, "Monday", "A", 2, 3, "C1", None, "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10")
     courses = [(i, "C" + str(i), "Course " + str(i)) for i in range(1, 11) if i != 2]
-    conn, cursor = real([(2, 3, "A"), [allocation], *courses])
+    conn, cursor = real([(2, 3, "A", 2), [allocation], *courses])
     result = db_adapter.get_timetable(917)
     assert [r["period"] for r in result["rows"]] == ["period_" + str(i) for i in range(1, 11) if i != 2]
-    assert cursor.sql[1][1] == (2, 3, "A")
+    assert cursor.sql[1][1] == (2, 3, "A", 2)
+    assert "department_id = %s" in cursor.sql[1][0]
     assert "nineth_period" in cursor.sql[1][0]
-    assert cursor.sql[2][1] == ("C1",)
+    assert cursor.sql[2][1] == ("C1", 2)
+    conn.close.assert_called_once()
+
+
+def test_timetable_missing_department_fails_closed(real):
+    conn, cursor = real([(2, 3, "A", None), []])
+    result = db_adapter.get_timetable(917)
+    assert result['status'] == 'no_data'
+    assert cursor.sql[1][1] == (2, 3, 'A', None)
+    assert 'department_id = %s' in cursor.sql[1][0]
     conn.close.assert_called_once()
 
 

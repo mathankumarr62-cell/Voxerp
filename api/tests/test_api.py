@@ -8,6 +8,31 @@ from api.views import PENDING_SALT
 
 
 class ApiSecurityTests(TestCase):
+    def test_logout_returns_to_student_login(self):
+        self.client.force_login(self.user)
+        self.assertRedirects(self.client.post('/logout/'), '/login/')
+
+    def test_undefined_privileged_roles_do_not_fall_back_to_student(self):
+        from django.contrib.auth.models import Group
+        from django.test import RequestFactory
+        from api.views import _identity
+        from intelligence.rbac import authorize_request
+
+        request = RequestFactory().get('/')
+        request.user = self.user
+        for role in ('HOD', 'Admin'):
+            with self.subTest(role=role):
+                self.user.groups.set([Group.objects.create(name=role)])
+                identity = _identity(request)
+                self.assertEqual(identity.role, role.lower())
+                decision = authorize_request(identity.user_id, identity.role,
+                    {'action': 'read', 'table': 'marks', 'filters': {}}, 'Show my marks')
+                self.assertFalse(decision['allowed'])
+                self.assertEqual(decision['reason'], 'invalid_role')
+        self.user.groups.clear()
+        self.user.is_superuser = True
+        self.assertEqual(_identity(request).role, 'admin')
+
     def setUp(self):
         self.user = get_user_model().objects.create_user(
             username="student-1",

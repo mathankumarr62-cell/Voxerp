@@ -39,7 +39,13 @@ def _identity(request) -> Identity:
     user = request.user
     # ERP student id is intentionally supplied by the authenticated account's username.
     # A deployment can replace this with a protected profile mapping without changing RBAC.
-    role = "teacher" if user.groups.filter(name="teacher").exists() or user.is_staff else "student"
+    groups = {name.strip().lower() for name in user.groups.values_list("name", flat=True)}
+    if user.is_superuser or "admin" in groups:
+        role = "admin"  # Undefined academic permissions: RBAC rejects this role.
+    elif "hod" in groups:
+        role = "hod"
+    else:
+        role = "teacher" if "teacher" in groups or user.is_staff else "student"
     return Identity(user_id=user.username, role=role)
 
 

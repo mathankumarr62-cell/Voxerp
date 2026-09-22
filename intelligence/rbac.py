@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional
 
 import db_adapter
 from rag.retriever import retrieve_policy
+from intelligence.scope import VerifiedScopeResolver
 
 
 class PolicyEngine:
@@ -56,7 +57,14 @@ policy_engine = PolicyEngine()
 data_router = DataRouter()
 
 
-def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str = "") -> Dict[str, Any]:
+def authorize_request(
+    user_id: str,
+    role: str,
+    intent: Dict[str, Any],
+    text: str = "",
+    *,
+    scope_resolver: Optional[VerifiedScopeResolver] = None,
+) -> Dict[str, Any]:
     """Return a structured authorization decision before any adapter call."""
     # Policy Engine retrieves context; deterministic RBAC remains authoritative.
     policy_result = policy_engine.evaluate(role, text)
@@ -67,7 +75,10 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
         return {"allowed": False, "reason": "missing_user", "message": "I couldn't identify the current user."}
 
     normalized_role = (role or "").strip().lower() if isinstance(role, str) else ""
-    if normalized_role not in {"student", "teacher"}:
+    accepted_roles = {"student", "teacher"}
+    if scope_resolver is not None:
+        accepted_roles.update({"hod", "admin"})
+    if normalized_role not in accepted_roles:
         return {"allowed": False, "reason": "invalid_role", "message": "I couldn't determine the user's role."}
 
     if not isinstance(intent, dict):
@@ -75,7 +86,21 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
 
     action = intent.get("action")
     table = intent.get("table")
-    filters = intent.get("filters") or {}
+    filters = intent.get("filters")
+    if filters is None:
+        filters = {}
+    if not isinstance(filters, dict):
+        return {"allowed": False, "reason": "invalid_intent", "message": "I couldn't understand that request."}
+
+    # Names cannot establish identity or trigger pre-authorization ERP lookups.
+    # Explicit stable IDs and student self-reference retain their existing checks.
+    if isinstance(filters.get("student_name"), str) and filters["student_name"].strip():
+        return {
+            "allowed": False,
+            "reason": "unauthorized_target",
+            "message": "You can only access your own data." if normalized_role == "student"
+                       else "A verified student ID is required for that request.",
+        }
 
     if action == "unsupported" or table == "unsupported":
         return {"allowed": False, "reason": "unsupported", "message": "I can't help with that request."}
@@ -152,7 +177,7 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
 
         return {"allowed": True, "reason": None, "message": None, "target_student_id": target_student_id}
 
-    if normalized_role == "teacher":
+    if normalized_role in {"teacher", "hod", "admin"}:
         # Never treat the teacher's ID as a student ID.
         target_student_id = _resolve_target_student_id(filters)
 
@@ -165,6 +190,17 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
                 "message": "I couldn't safely determine which student you meant.",
             }
 
+        if scope_resolver is not None:
+            decision = scope_resolver.authorize(
+                user_id,
+                normalized_role,
+                _scope_operation(action, table),
+                target_student_id,
+                course_code=filters.get("subject") if isinstance(filters.get("subject"), str) else None,
+                section=filters.get("section") if isinstance(filters.get("section"), str) else None,
+            )
+            return decision.as_dict()
+
         # Find the teacher's assigned class.
         permitted_class = _teacher_permitted_class(user_id)
 
@@ -174,8 +210,8 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
                 "allowed": False,
                 "reason": "teacher_scope_unknown",
                 "message": (
-                    "The current database does not define teacher "
-                    "class membership, so access is blocked safely."
+                    "A verified teacher identity and teaching scope are "
+                    "not configured, so access is blocked safely."
                 ),
             }
 
@@ -206,6 +242,12 @@ def authorize_request(user_id: str, role: str, intent: Dict[str, Any], text: str
         }
 
     return {"allowed": False, "reason": "invalid_role", "message": "I couldn't determine the user's role."}
+
+
+def _scope_operation(action: Any, table: Any) -> str:
+    if action == "write" and table == "attendance":
+        return "attendance_write"
+    return str(table or "")
 
 
 def _is_self_reference(text: str) -> bool:
@@ -274,17 +316,6 @@ def _resolve_target_student_id(filters: Dict[str, Any]) -> Optional[str]:
     if isinstance(student_id, str) and student_id.strip():
         return student_id.strip()
 
-    student_name = filters.get("student_name")
-    if isinstance(student_name, str) and student_name.strip():
-        return _student_id_from_name(student_name.strip())
-
-    return None
-
-
-def _student_id_from_name(name: str) -> Optional[str]:
-    result = db_adapter.lookup_student(name=name)
-    if result.get("status") == "ok" and result.get("student"):
-        return result["student"].get("id")
     return None
 
 
@@ -298,8 +329,9 @@ def _student_class(student_id: str) -> Optional[str]:
 def _teacher_permitted_class(user_id: str) -> Optional[str]:
     """Return a verified teacher class, or None when scope is unavailable.
 
-    The current MariaDB schema does not define a teacher-to-class mapping,
-    so teacher access must fail closed rather than guessing a class.
+    ERP enrollment/faculty relationships exist, but the authenticated teacher
+    identity and approved course/term permissions are not configured. A shared
+    class label alone cannot safely represent those scopes.
     """
     return None
 

@@ -1,13 +1,239 @@
-<!doctype html><html><head><meta charset="utf-8"><title>VoxERP</title><style>body{font:16px system-ui;max-width:720px;margin:3rem auto;padding:0 1rem}textarea{width:100%;min-height:5rem}button{padding:.6rem 1rem;margin:.5rem .25rem 0 0}#reply{white-space:pre-wrap;padding:1rem;background:#f3f5f7;border-radius:.5rem}</style></head><body>
-<header><h1>VoxERP</h1><p>Signed in as {{ request.user.get_username }} · <form method="post" action="{% url 'logout' %}" style="display:inline">{% csrf_token %}<button type="submit">Log out</button></form></p></header>
-<main><label for="text">Ask about your marks, attendance, timetable, or policy</label><textarea id="text" maxlength="4000" placeholder="What is my attendance?"></textarea><div><button id="send">Send</button><button id="mic" type="button">Use microphone</button><span id="confirmation" hidden><button id="yes">Yes, confirm</button><button id="no">No, cancel</button></span></div><p id="status"></p><div id="reply" aria-live="polite"></div></main>
+<!doctype html>
+<html lang="en-US">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>VoxERP</title>
+<style>body{font:16px system-ui;max-width:720px;margin:3rem auto;padding:0 1rem}textarea{box-sizing:border-box;width:100%;min-height:5rem}button{padding:.6rem 1rem;margin:.5rem .25rem 0 0}#reply{white-space:pre-wrap;padding:1rem;background:#f3f5f7;border-radius:.5rem}</style></head>
+<body>
+<header><h1>VoxERP</h1><p>Signed in as {{ request.user.get_username }}</p><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit">Log out</button></form></header>
+<main>
+<label for="text">Ask about your marks, attendance, timetable, or policy</label>
+<textarea id="text" maxlength="4000" placeholder="What is my attendance?"></textarea>
+<div><button id="send" type="button">Send</button><button id="mic" type="button" aria-pressed="false">Use microphone</button><span id="confirmation" hidden><button id="yes" type="button">Yes, confirm</button><button id="no" type="button">No, cancel</button></span></div>
+<p id="status" role="status"></p><p id="voice-status" role="status"></p>
+<div id="reply" aria-live="polite"></div>
+<p><label><input id="speak-replies" type="checkbox" checked> Read replies aloud</label> <button id="stop-audio" type="button" disabled>Stop reading</button></p>
+<p id="audio-status" role="status"></p>
+</main>
 <script>
-const csrf=document.querySelector('[name=csrfmiddlewaretoken]').value;let pending=null;
-async function post(url,body){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.reply_text||'Request failed');return data}
-function show(data){document.querySelector('#reply').textContent=data.reply_text||'No response';if('speechSynthesis'in window)speechSynthesis.speak(new SpeechSynthesisUtterance(data.reply_text||''));}
-async function ask(){try{const text=document.querySelector('#text').value;document.querySelector('#status').textContent='Working…';const data=await post('/api/query/',{text});pending=data.pending||null;document.querySelector('#confirmation').hidden=!pending;show(data);document.querySelector('#status').textContent=pending?'This action needs confirmation. Choose yes or no.':''}catch(e){document.querySelector('#status').textContent=e.message}}
-async function decide(confirm){if(!pending)return;try{const data=await post('/api/confirm/',{confirm,pending});pending=null;document.querySelector('#confirmation').hidden=true;show(data);document.querySelector('#status').textContent=''}catch(e){pending=null;document.querySelector('#confirmation').hidden=true;document.querySelector('#status').textContent=e.message}}
-document.querySelector('#send').onclick=ask;
-document.querySelector('#yes').onclick=()=>decide('yes');document.querySelector('#no').onclick=()=>decide('no');
-document.querySelector('#mic').onclick=()=>{const R=window.SpeechRecognition||window.webkitSpeechRecognition;if(!R){document.querySelector('#status').textContent='Speech recognition is unavailable; text input still works.';return}const r=new R();r.onresult=e=>{const spoken=e.results[0][0].transcript.trim().toLowerCase();if(pending&&(spoken==='yes'||spoken==='no'))decide(spoken);else{document.querySelector('#text').value=e.results[0][0].transcript;ask()}};r.onerror=()=>document.querySelector('#status').textContent='Voice input failed; please use text input.';r.start()};
-</script></body></html>
+'use strict';
+const el = id => document.getElementById(id);
+const csrf = document.querySelector('[name=csrfmiddlewaretoken]').value;
+let pending = null, busy = false, requestController = null;
+let recognition = null, recognitionTimer = null;
+let speechVersion = 0, speechTimer = null, activeUtterance = null;
+
+function setBusy(value) {
+    busy = value;
+    for (const id of ['send', 'mic', 'yes', 'no']) el(id).disabled = value;
+}
+function clearPending() {
+    pending = null;
+    el('confirmation').hidden = true;
+}
+function stopReading(message = '') {
+    speechVersion++;
+    clearTimeout(speechTimer);
+    activeUtterance = null;
+    try { window.speechSynthesis?.cancel(); } catch (_) { /* Text remains available. */ }
+    el('stop-audio').disabled = true;
+    el('audio-status').textContent = message;
+}
+function readReply(text) {
+    stopReading();
+    if (!el('speak-replies').checked || typeof text !== 'string' || !text.trim()) return;
+    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+        el('audio-status').textContent = 'Read aloud is unavailable in this browser. The reply is shown above.';
+        return;
+    }
+    // Short utterances avoid browser length limits; the complete reply stays visible.
+    let remaining = text.trim().slice(0, 4000);
+    const truncated = text.trim().length > 4000, chunks = [];
+    while (remaining) {
+        let end = Math.min(180, remaining.length);
+        if (end < remaining.length) {
+            const space = remaining.lastIndexOf(' ', end);
+            if (space > 90) end = space;
+        }
+        chunks.push(remaining.slice(0, end));
+        remaining = remaining.slice(end).trimStart();
+    }
+    const version = speechVersion;
+    el('stop-audio').disabled = false;
+    function next() {
+        if (version !== speechVersion) return;
+        if (!chunks.length) {
+            activeUtterance = null;
+            el('stop-audio').disabled = true;
+            el('audio-status').textContent = truncated
+                ? 'Finished reading the first 4,000 characters. The full reply is shown above.'
+                : 'Read aloud finished.';
+            return;
+        }
+        try {
+            const utterance = new window.SpeechSynthesisUtterance(chunks.shift());
+            activeUtterance = utterance; // Retain it until the browser finishes.
+            utterance.lang = document.documentElement.lang || 'en-US';
+            el('audio-status').textContent = 'Preparing read aloud…';
+            utterance.onstart = () => {
+                if (version === speechVersion) el('audio-status').textContent = 'Reading reply aloud…';
+            };
+            utterance.onend = () => {
+                if (version !== speechVersion || activeUtterance !== utterance) return;
+                clearTimeout(speechTimer);
+                activeUtterance = null;
+                next();
+            };
+            utterance.onerror = () => {
+                if (version === speechVersion && activeUtterance === utterance)
+                    stopReading('Read aloud failed. The reply is still available above.');
+            };
+            speechTimer = setTimeout(() => {
+                if (version === speechVersion)
+                    stopReading('Read aloud timed out. The reply is still available above.');
+            }, 30000);
+            window.speechSynthesis.speak(utterance);
+        } catch (_) {
+            stopReading('Read aloud is unavailable. The reply is still available above.');
+        }
+    }
+    next();
+}
+function stopListening(message = '') {
+    const current = recognition;
+    recognition = null; // Ignore late callbacks, including abort events.
+    clearTimeout(recognitionTimer);
+    if (current) { try { current.abort(); } catch (_) { /* Already ended. */ } }
+    el('mic').textContent = 'Use microphone';
+    el('mic').setAttribute('aria-pressed', 'false');
+    el('voice-status').textContent = message;
+}
+async function post(url, body, signal) {
+    const response = await fetch(url, {method: 'POST', signal,
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+        body: JSON.stringify(body)});
+    if (response.redirected) throw Error('Your session has ended. Sign in again to continue.');
+    let data;
+    try { data = await response.json(); } catch (_) { throw Error('The server could not answer. Please try again.'); }
+    if (!response.ok) throw Error(data.reply_text || 'Request failed. Please try again.');
+    return data;
+}
+async function submit(url, body) {
+    if (busy) return;
+    stopListening();
+    stopReading();
+    clearPending();
+    setBusy(true);
+    const controller = new AbortController();
+    requestController = controller;
+    el('status').textContent = 'Working…';
+    try {
+        const data = await post(url, body, controller.signal);
+        if (requestController !== controller) return;
+        pending = data.requires_confirmation && typeof data.pending === 'string' ? data.pending : null;
+        el('confirmation').hidden = !pending;
+        const reply = typeof data.reply_text === 'string' ? data.reply_text : '';
+        el('reply').textContent = reply || 'No response was returned.';
+        el('status').textContent = pending ? 'This action needs confirmation. Choose yes or no.' : '';
+        readReply(reply);
+    } catch (error) {
+        if (requestController === controller && error.name !== 'AbortError')
+            el('status').textContent = error.message;
+    } finally {
+        if (requestController === controller) {
+            requestController = null;
+            setBusy(false);
+        }
+    }
+}
+async function ask() {
+    if (busy) return;
+    const text = el('text').value.trim();
+    if (!text) { el('status').textContent = 'Type a question or use the microphone.'; return; }
+    return submit('/api/query/', {text});
+}
+async function decide(confirm) {
+    if (busy || !pending) return;
+    return submit('/api/confirm/', {confirm, pending});
+}
+function useMicrophone() {
+    if (busy) return;
+    if (recognition) { stopListening('Listening stopped.'); return; }
+    stopReading();
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!window.isSecureContext) {
+        el('voice-status').textContent = 'Microphone access requires localhost or HTTPS. Text input still works.';
+        return;
+    }
+    if (!Recognition) {
+        el('voice-status').textContent = 'Speech recognition is unavailable in this browser. Please use text input.';
+        return;
+    }
+    let current;
+    try {
+        current = new Recognition();
+        recognition = current;
+        current.lang = document.documentElement.lang || 'en-US';
+        current.continuous = false;
+        current.interimResults = false;
+        current.onstart = () => {
+            if (recognition === current) el('voice-status').textContent = 'Listening… Speak your question.';
+        };
+        current.onresult = event => {
+            if (recognition !== current) return;
+            const result = event.results?.[event.resultIndex || 0];
+            if (result?.isFinal === false) return;
+            const transcript = typeof result?.[0]?.transcript === 'string' ? result[0].transcript.trim() : '';
+            stopListening();
+            if (!transcript) { el('voice-status').textContent = 'No speech was recognized. Try again or type your question.'; return; }
+            el('text').value = transcript;
+            const answer = transcript.toLowerCase().replace(/[.!?]+$/, '');
+            if (pending && (answer === 'yes' || answer === 'no')) decide(answer);
+            else ask();
+        };
+        current.onerror = event => {
+            if (recognition !== current) return;
+            const messages = {
+                'not-allowed': 'Microphone permission was denied. Allow microphone access for this site in Chrome and for Chrome in macOS Privacy & Security → Microphone, then try again. Text input still works.',
+                'service-not-allowed': 'The browser speech service is unavailable or blocked. Check browser permissions or use text input.',
+                'audio-capture': 'No microphone is available. Check the input device and macOS microphone access, or use text input.',
+                'no-speech': 'No speech was detected. Try again or use text input.',
+                'network': 'The browser speech service could not connect. Check your connection or use text input.',
+                'aborted': 'Listening stopped.'
+            };
+            stopListening(messages[event.error] || 'Voice input failed. Please try again or use text input.');
+        };
+        current.onend = () => {
+            if (recognition === current) stopListening('Listening ended without a transcript. Try again or type your question.');
+        };
+        el('mic').textContent = 'Stop listening';
+        el('mic').setAttribute('aria-pressed', 'true');
+        el('voice-status').textContent = 'Requesting microphone access…';
+        recognitionTimer = setTimeout(() => {
+            if (recognition === current) stopListening('Listening timed out. Try again or type your question.');
+        }, 30000);
+        current.start(); // Native browser permission request; no fake microphone or bypass.
+    } catch (error) {
+        stopListening(error.name === 'NotAllowedError'
+            ? 'Microphone permission was denied. Check browser and macOS microphone permissions. Text input still works.'
+            : 'Could not start speech recognition. Please try again or use text input.');
+    }
+}
+function cleanup() {
+    stopListening();
+    stopReading();
+    const current = requestController;
+    requestController = null;
+    if (current) current.abort();
+    setBusy(false);
+    clearPending();
+    el('status').textContent = '';
+}
+el('send').onclick = ask;
+el('yes').onclick = () => decide('yes');
+el('no').onclick = () => decide('no');
+el('mic').onclick = useMicrophone;
+el('stop-audio').onclick = () => stopReading('Read aloud stopped.');
+el('speak-replies').onchange = () => { if (!el('speak-replies').checked) stopReading(); };
+window.addEventListener('pagehide', cleanup);
+document.addEventListener('visibilitychange', () => { if (document.hidden) cleanup(); });
+</script>
+</body></html>

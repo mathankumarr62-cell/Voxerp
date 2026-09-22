@@ -10,21 +10,19 @@ Django's local SQLite database (`voxerp_app.sqlite3`) is for users, sessions, an
 
 ## Setup
 
-Use Python 3.11+ and a virtual environment:
+Follow [DEPLOYMENT.md](DEPLOYMENT.md) for the tested Apple Silicon setup, authorized real-dump restore, local student login, startup, and voice test. The demo uses local Gemma and MariaDB, with real writes disabled and a SELECT-only ERP account. Do not use a superuser for the student demo.
+
+For an already initialized checkout:
 
 ```bash
-python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-cp .env.example .env
-python3 manage.py migrate
-python3 manage.py createsuperuser
-python3 manage.py runserver
+python scripts/local_demo.py start
+python scripts/local_demo.py run -- python manage.py runserver 127.0.0.1:8000 --noreload
 ```
 
-For a local HTTP demo set `DEBUG=True` in your uncommitted `.env`; keep it `False` in deployment. Create each Django account with a username matching its ERP student ID (for example `student-1`). A staff account or a member of the `teacher` group is treated as a teacher, but remains denied until a verified teacher-to-class mapping exists.
+Open `http://127.0.0.1:8000/` and sign in with the locally provisioned account. Username `917` maps only to ERP student ID `917`. Ask “Show my IT25201 marks”, “Show my IT25201 attendance”, or “What is the attendance policy?”. Student `917` has no matching current timetable in the supplied dump; student `44` has a department-scoped timetable and must log in separately to view it. Missing data is never filled with another department's schedule.
 
-Open `http://127.0.0.1:8000/`, sign in, and use the text box or microphone. Chrome-family browsers normally provide the Web Speech API. Other browsers show a clear fallback message and retain the text interface.
+Teacher academic access remains blocked pending a verified teacher identity/scope contract. HOD/Admin groups and superusers are explicitly denied academic permissions. See [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) for current evidence and blockers.
 
 ## Configuration and ERP safety
 
