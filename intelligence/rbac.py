@@ -86,7 +86,21 @@ def authorize_request(
 
     action = intent.get("action")
     table = intent.get("table")
-    filters = intent.get("filters") or {}
+    filters = intent.get("filters")
+    if filters is None:
+        filters = {}
+    if not isinstance(filters, dict):
+        return {"allowed": False, "reason": "invalid_intent", "message": "I couldn't understand that request."}
+
+    # Names cannot establish identity or trigger pre-authorization ERP lookups.
+    # Explicit stable IDs and student self-reference retain their existing checks.
+    if isinstance(filters.get("student_name"), str) and filters["student_name"].strip():
+        return {
+            "allowed": False,
+            "reason": "unauthorized_target",
+            "message": "You can only access your own data." if normalized_role == "student"
+                       else "A verified student ID is required for that request.",
+        }
 
     if action == "unsupported" or table == "unsupported":
         return {"allowed": False, "reason": "unsupported", "message": "I can't help with that request."}
@@ -302,17 +316,6 @@ def _resolve_target_student_id(filters: Dict[str, Any]) -> Optional[str]:
     if isinstance(student_id, str) and student_id.strip():
         return student_id.strip()
 
-    student_name = filters.get("student_name")
-    if isinstance(student_name, str) and student_name.strip():
-        return _student_id_from_name(student_name.strip())
-
-    return None
-
-
-def _student_id_from_name(name: str) -> Optional[str]:
-    result = db_adapter.lookup_student(name=name)
-    if result.get("status") == "ok" and result.get("student"):
-        return result["student"].get("id")
     return None
 
 

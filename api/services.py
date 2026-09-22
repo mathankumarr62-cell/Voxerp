@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from functools import lru_cache
 import os
 from typing import Any
 
 import db_adapter
-from intelligence.intent_engine import IntentEngine
+from intelligence.intent_engine import INTENT_SCHEMA, IntentEngine
 from intelligence.rbac import authorize_request, data_router
 from intelligence.response_generator import generate_response
 from rag.retriever import retrieve_policy
@@ -88,10 +87,9 @@ class VoxERPService:
         return {"reply_text": generate_response(result), "status": 200}
 
 
-@lru_cache(maxsize=1)
 def _schema_map() -> dict[str, Any]:
-    """Avoid rediscovering the stable ERP schema on every web request."""
-    return db_adapter.build_schema_map()
+    """Classification uses the public intent contract, never live ERP discovery."""
+    return {"intent_schema": INTENT_SCHEMA}
 
 
 def _backend_guard():

@@ -105,23 +105,34 @@ class VerifiedScopeResolver:
         if role.strip().lower() not in PRIVILEGED_ROLES:
             return self._deny("invalid_role", "I couldn't determine the user's role.")
 
-        identity = self.source.faculty_identity(account_id.strip())
+        try:
+            identity = self.source.faculty_identity(account_id.strip())
+        except Exception:
+            return self._deny("identity_unverified", "Verified faculty identity is unavailable.")
         if not self._valid_identity(identity, account_id.strip()):
             return self._deny("identity_unverified", "A verified ERP faculty identity is not configured.")
 
-        grant = self.source.role_grant(account_id.strip(), role.strip().lower())
+        try:
+            grant = self.source.role_grant(account_id.strip(), role.strip().lower())
+        except Exception:
+            return self._deny("role_unverified", "Verified role scope is unavailable.")
         if not self._valid_grant(grant, role.strip().lower(), operation):
             return self._deny("role_unverified", "A verified ERP role grant is not configured.")
 
-        scopes = self.source.student_scope(student_id.strip())
+        try:
+            scopes = self.source.student_scope(student_id.strip())
+        except Exception:
+            return self._deny("target_unverified", "Verified student scope is unavailable.", student_id)
         if not isinstance(scopes, Sequence) or isinstance(scopes, (str, bytes)):
             return self._deny("malformed_scope", "The verified ERP scope is malformed.", student_id)
-        active_scopes = tuple(row for row in scopes if self._valid_student_scope(row))
+        if any(not self._valid_student_scope(row) or row.student_id != student_id.strip() for row in scopes):
+            return self._deny("malformed_scope", "The verified ERP scope is malformed.", student_id)
+        active_scopes = tuple(row for row in scopes if row.active is True)
         if not active_scopes:
             return self._deny("target_unverified", "The requested student scope could not be verified.", student_id)
 
-        if role.strip().lower() == "teacher" and grant.all_departments:
-            return self._deny("department_denied", "Teacher access requires explicit department scope.", student_id)
+        if role.strip().lower() in {"teacher", "hod"} and grant.all_departments:
+            return self._deny("department_denied", "This role requires explicit department scope.", student_id)
         if role.strip().lower() == "admin" and not grant.all_departments:
             return self._deny("department_scope_unknown", "Admin access requires explicit all-department scope.", student_id)
 
@@ -157,6 +168,7 @@ class VerifiedScopeResolver:
             and identity.account_id == account_id
             and isinstance(identity.faculty_row_id, int)
             and not isinstance(identity.faculty_row_id, bool)
+            and identity.faculty_row_id > 0
             and isinstance(identity.employee_id, str)
             and bool(identity.employee_id.strip())
             and isinstance(identity.department_id, int)
@@ -169,6 +181,7 @@ class VerifiedScopeResolver:
     def _valid_grant(grant: object, role: str, operation: str) -> bool:
         return (
             isinstance(grant, RoleGrant)
+            and isinstance(grant.role, str)
             and grant.role.strip().lower() == role
             and grant.active is True
             and isinstance(grant.operations, frozenset)
@@ -188,8 +201,12 @@ class VerifiedScopeResolver:
             and isinstance(scope.department_id, int)
             and not isinstance(scope.department_id, bool)
             and scope.department_id > 0
-            and scope.active is True
-            and (scope.faculty_row_id is None or isinstance(scope.faculty_row_id, int))
+            and isinstance(scope.active, bool)
+            and (scope.faculty_row_id is None or (
+                isinstance(scope.faculty_row_id, int)
+                and not isinstance(scope.faculty_row_id, bool)
+                and scope.faculty_row_id > 0
+            ))
             and (scope.course_code is None or (isinstance(scope.course_code, str) and bool(scope.course_code.strip())))
             and (scope.section is None or isinstance(scope.section, str))
         )
