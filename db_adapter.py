@@ -722,7 +722,7 @@ def get_enrollment(student_id: str) -> Dict[str, Any]:
         _close_connection(conn)
 
 
-def get_attendance(student_id: str, subject: Optional[str] = None, connection=None) -> Dict[str, Any]:
+def get_attendance(student_id: str, subject: Optional[str] = None, connection=None, *, hourly: bool = False) -> Dict[str, Any]:
     if not student_id:
         raise ValueError("student_id is required")
 
@@ -749,7 +749,7 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
                     "message": f"I couldn't find student {student_id}",
                 }
 
-            if subject:
+            if subject or hourly:
                 normalized = _normalize_subject(subject)
 
                 cursor.execute(
@@ -777,7 +777,7 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
 
                 rows = [
                     r for r in rows
-                    if _normalize_subject(r[6]) == normalized
+                    if not subject or _normalize_subject(r[6]) == normalized
                     or _normalize_subject(r[7]) == normalized
                 ]
 
@@ -837,6 +837,22 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
                 for r in attendance_rows[:5]
             )
 
+            if hourly:
+                periods = {}
+                for row in attendance_rows:
+                    key = (row["date"], row["period"], _normalize_subject(row["course_code"]))
+                    status = str(row["status"]).strip().casefold()
+                    if (not all(key) or status not in {"present", "absent", "on duty"}
+                            or (key in periods and periods[key] != status)):
+                        return {"status": "ambiguous", "rows": [],
+                                "message": "Recorded hourly attendance is incomplete or conflicting; I cannot safely count absent periods."}
+                    periods[key] = status
+                absent = sum(status == "absent" for status in periods.values())
+                return {
+                    "status": "ok", "rows": attendance_rows,
+                    "message": f"Across the recorded hourly attendance, {absent} of {len(periods)} periods are marked absent.",
+                }
+
             return {
                 "status": "ok",
                 "rows": attendance_rows,
@@ -857,6 +873,8 @@ def get_attendance(student_id: str, subject: Optional[str] = None, connection=No
                 if owns_connection:
                     _close_connection(conn)
 
+    if hourly:
+        return {"status": "no_data", "rows": [], "message": "No hourly attendance recorded."}
     conn = _sqlite_connect()
 
     try:

@@ -1,9 +1,10 @@
 """Application layer for the Django API; views contain no ERP access logic."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
 import os
+import re
+from .identity import Identity, current_student_is_active
 from typing import Any
 
 import db_adapter
@@ -11,12 +12,6 @@ from intelligence.intent_engine import INTENT_SCHEMA, IntentEngine
 from intelligence.rbac import authorize_request, data_router
 from intelligence.response_generator import generate_response
 from rag.retriever import retrieve_policy
-
-
-@dataclass(frozen=True)
-class Identity:
-    user_id: str
-    role: str
 
 
 class VoxERPService:
@@ -43,14 +38,17 @@ class VoxERPService:
             return {"reply_text": generate_response({"policy_context": retrieve_policy(identity.role, text)}), "status": 200}
         if intent.get("action") == "write":
             return self._pending(identity, authorization, filters)
-        return self._read(authorization["target_student_id"], intent)
+        if not current_student_is_active(authorization["target_student_id"]):
+            return {"reply_text": "Your current ERP student access could not be verified.", "status": 403}
+        return self._read(authorization["target_student_id"], intent, text)
 
-    def _read(self, student_id: str, intent: dict[str, Any]) -> dict[str, Any]:
+    def _read(self, student_id: str, intent: dict[str, Any], text: str = "") -> dict[str, Any]:
         filters, table = intent["filters"], intent["table"]
         if table == "attendance":
-            if not filters.get("subject"):
-                return {"reply_text": "Which subject would you like attendance for?", "status": 200}
-            result = db_adapter.get_attendance(student_id, filters["subject"])
+            if re.search(r"\b(?:periods?|hours?)\b", text, re.I):
+                result = db_adapter.get_attendance(student_id, filters.get("subject"), hourly=True)
+            else:
+                result = db_adapter.get_attendance(student_id, filters.get("subject"))
         elif table == "marks":
             result = db_adapter.get_marks(student_id, filters.get("subject"))
         elif table == "timetable":
@@ -83,6 +81,8 @@ class VoxERPService:
             return {"reply_text": "You are not authorized to make that change.", "status": 403}
         if db_adapter._real_db_enabled() and not db_adapter._real_writes_enabled():
             return {"reply_text": "Real database writes are disabled.", "status": 403}
+        if not current_student_is_active(pending["student_id"]):
+            return {"reply_text": "Your current ERP student access could not be verified.", "status": 403}
         result = db_adapter.mark_attendance(pending["student_id"], pending["subject"], pending["date"], pending["status"], actor_id=identity.user_id, period=period)
         return {"reply_text": generate_response(result), "status": 200}
 

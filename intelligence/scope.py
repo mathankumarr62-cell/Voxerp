@@ -7,6 +7,7 @@ numeric role IDs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Iterable, Optional, Protocol, Sequence
 
 
@@ -46,6 +47,8 @@ class StudentScope:
     academic_year: Optional[str] = None
     year: Optional[str] = None
     semester: Optional[str] = None
+    valid_from: Optional[date] = None
+    valid_until: Optional[date] = None
     active: bool = True
 
 
@@ -93,6 +96,10 @@ class VerifiedScopeResolver:
         *,
         course_code: Optional[str] = None,
         section: Optional[str] = None,
+        batch: Optional[str] = None,
+        academic_year: Optional[str] = None,
+        year: Optional[str] = None,
+        semester: Optional[str] = None,
     ) -> ScopeDecision:
         if not self._nonempty_string(account_id):
             return self._deny("missing_user", "I couldn't identify the current user.")
@@ -148,6 +155,9 @@ class VerifiedScopeResolver:
         if role.strip().lower() == "teacher":
             if not self._nonempty_string(course_code):
                 return self._deny("course_scope_unknown", "A verified course scope is required for teacher access.", student_id)
+            dimensions = {"batch": batch, "academic_year": academic_year, "year": year, "semester": semester}
+            if not all(self._nonempty_string(value) for value in dimensions.values()):
+                return self._deny("term_scope_unknown", "Complete verified batch and term scope is required.", student_id)
             matching = [
                 row for row in active_scopes
                 if row.faculty_row_id == identity.faculty_row_id
@@ -155,8 +165,11 @@ class VerifiedScopeResolver:
                 and self._nonempty_string(section)
                 and self._nonempty_string(row.section)
                 and row.section == section
+                and all(getattr(row, field) == value for field, value in dimensions.items())
+                and type(row.valid_from) is date and type(row.valid_until) is date
+                and row.valid_from <= date.today() <= row.valid_until
             ]
-            if not matching:
+            if len(matching) != 1:
                 return self._deny("teaching_scope_denied", "That student is outside the verified teaching scope.", student_id)
 
         return ScopeDecision(True, "verified_scope", "", student_id)
@@ -208,6 +221,12 @@ class VerifiedScopeResolver:
                 and scope.faculty_row_id > 0
             ))
             and (scope.course_code is None or (isinstance(scope.course_code, str) and bool(scope.course_code.strip())))
+            and all(getattr(scope, field) is None or (
+                isinstance(getattr(scope, field), str) and bool(getattr(scope, field).strip())
+            ) for field in ("batch", "academic_year", "year", "semester"))
+            and (scope.course_id is None or (type(scope.course_id) is int and scope.course_id > 0))
+            and (scope.valid_from is None or type(scope.valid_from) is date)
+            and (scope.valid_until is None or type(scope.valid_until) is date)
             and (scope.section is None or isinstance(scope.section, str))
         )
 
@@ -233,8 +252,17 @@ class StaticScopeSource:
         grants: Iterable[tuple[str, RoleGrant]] = (),
         scopes: Iterable[StudentScope] = (),
     ) -> None:
-        self._identities = {row.account_id: row for row in identities}
-        self._grants = {(account, grant.role.strip().lower()): grant for account, grant in grants}
+        self._identities = {}
+        for row in identities:
+            if row.account_id in self._identities:
+                raise ValueError("Ambiguous faculty identity")
+            self._identities[row.account_id] = row
+        self._grants = {}
+        for account, grant in grants:
+            key = (account, grant.role.strip().lower())
+            if key in self._grants:
+                raise ValueError("Ambiguous role grant")
+            self._grants[key] = grant
         rows: dict[str, list[StudentScope]] = {}
         for row in scopes:
             rows.setdefault(row.student_id, []).append(row)

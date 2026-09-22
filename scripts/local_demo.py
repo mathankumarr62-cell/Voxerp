@@ -141,6 +141,7 @@ def environment():
             'VOXERP_APP_DB': str(STATE / 'auth.sqlite3'),
             'VOXERP_ALLOW_REAL_WRITES': 'False', 'VOXERP_INITIALIZE_DATABASE': 'False',
             'VOXERP_OFFLINE_MODE': 'False', 'VOXERP_ENV': 'development',
+            'VOXERP_IDENTITY_MODE': 'local_demo',
             'DEBUG': 'True', 'ALLOWED_HOSTS': 'localhost,127.0.0.1,testserver',
             'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1'}
 

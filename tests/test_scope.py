@@ -1,4 +1,6 @@
 import pytest
+from datetime import date
+from dataclasses import replace
 
 from intelligence.rbac import authorize_request
 from intelligence.scope import (
@@ -9,6 +11,13 @@ from intelligence.scope import (
     VerifiedScopeResolver,
 )
 
+
+_RawStudentScope = StudentScope
+
+def StudentScope(*args, **kwargs):
+    defaults = dict(batch="2023", academic_year="2026-2027", year="3", semester="5",
+                    valid_from=date(2020, 1, 1), valid_until=date(2099, 1, 1))
+    return _RawStudentScope(*args, **{**defaults, **kwargs})
 
 def make_resolver(*, identities=(), grants=(), scopes=()):
     return VerifiedScopeResolver(StaticScopeSource(identities, grants, scopes))
@@ -41,6 +50,7 @@ def intent(*, student_id="student-1", table="marks", action="read", subject=None
             "student_name": None,
             "subject": subject,
             "section": section,
+            "batch": "2023", "academic_year": "2026-2027", "year": "3", "semester": "5",
         },
     }
 
@@ -249,3 +259,60 @@ def test_teacher_requires_matching_faculty_assignment(faculty_row_id):
                              course_code="EE3020", section="A")],
     )
     assert authorize_privileged("teacher", resolver)["allowed"] is False
+
+@pytest.mark.parametrize("field,value", [
+    ("batch", "wrong"), ("academic_year", "wrong"), ("year", "wrong"),
+    ("semester", "wrong"), ("batch", None), ("semester", 5),
+])
+def test_teacher_wrong_or_missing_term_denied(field, value):
+    request = intent(subject="EE3020", section="A")
+    request["filters"][field] = value
+    assert not authorize_privileged("teacher", teacher_resolver(), request)["allowed"]
+
+@pytest.mark.parametrize("changes", [
+    {"active": False}, {"valid_until": date(2000,1,1)},
+    {"valid_from": date(2099,1,1)}, {"valid_until": None},
+    {"academic_year": None}, {"batch": []},
+])
+def test_teacher_expired_revoked_or_malformed_assignment(changes):
+    resolver = teacher_resolver()
+    source = resolver.source
+    row = source.student_scope("student-1")[0]
+    source._scopes["student-1"] = (replace(row, **changes),)
+    assert not authorize_privileged("teacher", resolver)["allowed"]
+
+def test_teacher_duplicate_assignment_denied():
+    resolver = teacher_resolver()
+    row = resolver.source.student_scope("student-1")[0]
+    resolver.source._scopes["student-1"] = (row, row)
+    assert not authorize_privileged("teacher", resolver)["allowed"]
+
+@pytest.mark.parametrize("method", ["faculty_identity", "role_grant", "student_scope"])
+def test_scope_source_failure_denies(method):
+    resolver = teacher_resolver()
+    def failed(*args):
+        raise RuntimeError("unavailable")
+    setattr(resolver.source, method, failed)
+    assert not authorize_privileged("teacher", resolver)["allowed"]
+
+@pytest.mark.parametrize("role", ["hod", "admin"])
+def test_revoked_privileged_grant(role):
+    resolver = make_resolver(
+        identities=[FacultyIdentity("teacher-account", 1, "employee", 6)],
+        grants=[("teacher-account", RoleGrant(role, frozenset({"marks"}), frozenset({6}), role == "admin", False))],
+        scopes=[StudentScope("student-1", 6)],
+    )
+    assert not authorize_privileged(role, resolver)["allowed"]
+
+def test_read_grant_cannot_authorize_marks_write():
+    assert not authorize_privileged("teacher", teacher_resolver(),
+        intent(subject="EE3020", section="A", action="write"))["allowed"]
+
+
+def test_ambiguous_identity_and_grants_rejected():
+    identity=FacultyIdentity("account", 1, "employee", 6)
+    grant=("account", RoleGrant("teacher", frozenset({"marks"}), frozenset({6})))
+    with pytest.raises(ValueError):
+        StaticScopeSource(identities=[identity, identity])
+    with pytest.raises(ValueError):
+        StaticScopeSource(grants=[grant, grant])

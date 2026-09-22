@@ -85,3 +85,28 @@ def test_invalid_write_input_before_connection(real,date,status):
     conn, cursor = real([])
     assert db_adapter.mark_attendance(917, "IT25201", date, status, "actor", period=1)["status"] == "invalid"
     conn.cursor.assert_not_called()
+
+
+def test_hourly_summary_does_not_count_daily_records(real):
+    conn, cursor = real([(123,), [
+        (1, "2026-01-01", "absent", None, None, None, "C1", "Course One", 1),
+        (2, "2026-01-01", "present", None, None, None, "C2", "Course Two", 2),
+    ]])
+    result = db_adapter.get_attendance("123", hourly=True)
+    assert "1 of 2 periods" in result["message"]
+    assert "student_management_hourattendance" in cursor.sql[1][0]
+    assert cursor.sql[1][1] == ("123",)
+
+
+@pytest.mark.parametrize("second_status,expected", [("Absent", "ok"), ("Present", "ambiguous")])
+def test_duplicate_hourly_records_never_double_count_or_guess(real, second_status, expected):
+    conn, cursor = real([(123,), [
+        (1, "2026-01-01", "Absent", None, None, None, "C1", "Course One", 1),
+        (2, "2026-01-01", second_status, None, None, None, "C1", "Course One", 1),
+    ]])
+    result=db_adapter.get_attendance("123", hourly=True)
+    assert result["status"] == expected
+    if expected == "ok":
+        assert "1 of 1 periods" in result["message"]
+    else:
+        assert not result["rows"]

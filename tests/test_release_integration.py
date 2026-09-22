@@ -79,7 +79,7 @@ def test_real_write_disabled_at_backend_boundary(client, monkeypatch):
     with mock.patch.object(db_adapter, "mark_attendance") as write, mock.patch.object(db_adapter, "_get_connection") as connect:
         result = post(client, "/api/confirm/", {"confirm": "yes", "pending": token})
     assert result.status_code == 403
-    assert "disabled" in result.json()["reply_text"]
+    assert "not authorized" in result.json()["reply_text"]  # Fixture identities cannot become real ERP identities.
     write.assert_not_called()
     connect.assert_not_called()
 
