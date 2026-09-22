@@ -39,6 +39,16 @@ def sql(statement=None, source=None):
 def start():
     if not (STATE / 'data/mysql').is_dir():
         raise RuntimeError('Run init with the authorized dump first.')
+    # An interrupted filesystem copy can retain InnoDB data while truncating
+    # its table definitions. MariaDB starts, but reads then fail with error 1033.
+    empty_tables = [path for path in (STATE / 'data').rglob('*')
+                    if path.is_file() and path.suffix in {'.frm', '.ibd'}
+                    and path.stat().st_size == 0]
+    if empty_tables:
+        raise RuntimeError(
+            f'Local clone has {len(empty_tables)} empty table files. '
+            'Preserve this clone and recover from an intact backup or the '
+            'authorized SQL dump before starting MariaDB.')
     if SOCKET.exists():
         sql('SELECT 1;')
         print('Local MariaDB is already running.')

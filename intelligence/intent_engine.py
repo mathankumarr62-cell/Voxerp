@@ -383,6 +383,25 @@ class IntentEngine:
                     filters["subject"] = candidate
                     filters["student_id"] = None
 
+        # Gemma can put a course code in student_name rather than subject.
+        # Only repair the explicit "my <code> <operation>" construction,
+        # and only remove the name when it equals that exact course code.
+        self_course = re.search(
+            r"\bmy\s+([A-Za-z]{2,}\d[A-Za-z0-9._-]*)\s+"
+            r"(?:marks?|scores?|attendance)\b",
+            text, flags=re.IGNORECASE,
+        )
+        if table in {"marks", "attendance"} and self_course:
+            code = self_course.group(1)
+            name = filters.get("student_name")
+            # Validation may already have removed the code as an invalid name.
+            if name is None or (
+                isinstance(name, str) and name.strip().casefold() == code.casefold()
+            ):
+                filters["student_name"] = None
+                if not filters.get("subject"):
+                    filters["subject"] = code
+
         return intent
 
     def _apply_explicit_student_target(

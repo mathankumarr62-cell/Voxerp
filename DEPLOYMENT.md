@@ -132,6 +132,7 @@ For deployment use Django WSGI/ASGI behind HTTPS, `VOXERP_ENV=production`, `DEBU
 ## Troubleshooting
 
 - **Existing `.local-demo`:** use `start`; initialization intentionally refuses overwrite. If initialization stopped before creating the ERP database, start it and use `restore --dump PATH`. If a partial ERP database exists, preserve the failed directory and diagnose its private logs before creating a fresh clone; there is no automatic deletion/reset.
+- **MariaDB error 1033 / empty table files:** an incomplete filesystem copy can leave zero-byte `.frm` or `.ibd` files even though MariaDB starts. `start` now rejects these clones before contacting or launching MariaDB. Preserve the damaged directory, stop only the identified local demo server, and use an intact, cleanly stopped original clone or restore the authorized SQL dump into a fresh private directory. Do not invent table definitions or copy individual InnoDB files into a running server. A startup file check is not a complete integrity check: also run the read validator after recovery.
 - **Port 3307 busy:** stop the identified conflicting local service or use an isolated host; do not expose MariaDB on another network interface.
 - **Import failure:** inspect `.local-demo/restore-error.log` locally. It may contain academic SQL; never attach it to public issues.
 - **Missing Gemma / Metal failure:** run on the validated Apple Silicon host with OS/GPU access, check the cached snapshot and pinned dependencies. No cloud fallback is enabled.

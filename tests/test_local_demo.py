@@ -39,3 +39,34 @@ def test_initialization_preserves_existing_state(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match='overwrite'):
         local_demo.initialize(dump)
     assert marker.read_text() == 'untouched'
+
+
+@pytest.mark.parametrize('suffix', ['.frm', '.ibd'])
+def test_start_rejects_truncated_clone_before_contacting_server(tmp_path, monkeypatch, suffix):
+    (tmp_path / 'data/mysql').mkdir(parents=True)
+    damaged = tmp_path / 'data/mysql' / ('table' + suffix)
+    damaged.touch()
+    socket = tmp_path / 'mysql.sock'
+    socket.touch()
+    monkeypatch.setattr(local_demo, 'STATE', tmp_path)
+    monkeypatch.setattr(local_demo, 'SOCKET', socket)
+    monkeypatch.setattr(local_demo, 'sql', lambda *args: pytest.fail('Must not contact damaged server'))
+    with pytest.raises(RuntimeError, match='empty table files'):
+        local_demo.start()
+    assert damaged.exists() and damaged.stat().st_size == 0
+
+
+def test_start_accepts_intact_running_clone(tmp_path, monkeypatch, capsys):
+    (tmp_path / 'data/mysql').mkdir(parents=True)
+    (tmp_path / 'data/mysql/table.frm').write_bytes(b'table definition')
+    (tmp_path / 'data/mysql/table.ibd').write_bytes(b'tablespace')
+    (tmp_path / 'data/optional.log').touch()
+    socket = tmp_path / 'mysql.sock'
+    socket.touch()
+    monkeypatch.setattr(local_demo, 'STATE', tmp_path)
+    monkeypatch.setattr(local_demo, 'SOCKET', socket)
+    calls = []
+    monkeypatch.setattr(local_demo, 'sql', lambda statement: calls.append(statement))
+    local_demo.start()
+    assert calls == ['SELECT 1;']
+    assert 'already running' in capsys.readouterr().out
