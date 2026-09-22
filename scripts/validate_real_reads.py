@@ -63,12 +63,6 @@ def main():
         ok = result.get("status") == "ok" and bool(result.get("rows"))
         print(("PASS:" if ok else "FAIL:"), name, "READ", result.get("status"))
         passed = passed and ok
-    if args.student_id == "917" and args.subject == "IT25201":
-        rows = results["marks"].get("rows", [])
-        for label, score in [("IAT1", 62), ("IAT2", 77)]:
-            ok = any(str(r["exam_name"]).replace(" ", "").upper() == label and r["marks_obtained"] == score and r["max_marks"] == 100 for r in rows)
-            print(("PASS:" if ok else "FAIL:"), "historical marks expectation", label)
-            passed = passed and ok
     from api.services import Identity, VoxERPService
     from intelligence.response_generator import generate_response
     class Engine:

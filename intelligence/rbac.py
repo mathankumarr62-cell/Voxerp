@@ -92,6 +92,15 @@ def authorize_request(
     if not isinstance(filters, dict):
         return {"allowed": False, "reason": "invalid_intent", "message": "I couldn't understand that request."}
 
+    if not ((action == "read" and table in {"marks", "attendance", "timetable"})
+            or (action == "write" and table == "attendance")
+            or (action == "policy_query" and table == "policy")
+            or action == "unsupported" or table == "unsupported"):
+        return {"allowed": False, "reason": "unsupported_operation", "message": "That academic operation is not configured."}
+    target = filters.get("student_id")
+    if target is not None and (not isinstance(target, str) or not target.strip()):
+        return {"allowed": False, "reason": "invalid_target", "message": "I couldn't verify the requested student."}
+
     # Names cannot establish identity or trigger pre-authorization ERP lookups.
     # Explicit stable IDs and student self-reference retain their existing checks.
     if isinstance(filters.get("student_name"), str) and filters["student_name"].strip():
@@ -198,6 +207,7 @@ def authorize_request(
                 target_student_id,
                 course_code=filters.get("subject") if isinstance(filters.get("subject"), str) else None,
                 section=filters.get("section") if isinstance(filters.get("section"), str) else None,
+                **{field: filters.get(field) for field in ("batch", "academic_year", "year", "semester")},
             )
             return decision.as_dict()
 
@@ -247,7 +257,7 @@ def authorize_request(
 def _scope_operation(action: Any, table: Any) -> str:
     if action == "write" and table == "attendance":
         return "attendance_write"
-    return str(table or "")
+    return str(table or "") if action == "read" else "unsupported"
 
 
 def _is_self_reference(text: str) -> bool:

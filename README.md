@@ -73,3 +73,16 @@ The Django API and security test suite is the active validation path. New deploy
 - **Database unavailable:** verify private/Tailscale connectivity and `DB_*` values; never change write safety settings to diagnose a connection.
 
 Flask is retired. The protected Person A adapter retains the real ERP read/write contracts. Run `python scripts/validate_real_reads.py --student-id <approved-id> --subject <course-code>` for explicit read-only MariaDB validation; inference is stubbed and reported separately. Never run the manual transaction probes as tests. See [DEPLOYMENT.md](DEPLOYMENT.md).
+
+
+## Current completion safeguards
+
+The local wrapper explicitly enables the provisioned numeric student identity
+convention. Production requires an institutional implementation of
+`api.identity.AuthenticatedIdentityResolver` and rejects that demo convention.
+Real student reads recheck ERP active/discontinued status. Overall attendance
+and recorded absent-period counts are supported. Teacher/HOD/Admin academic
+access remains blocked: the dump has no populated authentication mapping or
+proven end-to-end role/capability contract. See the latest audit in
+[SCHEMA_MAPPING.md](SCHEMA_MAPPING.md) and results in
+[RELEASE_VALIDATION.md](RELEASE_VALIDATION.md).

@@ -1,5 +1,6 @@
 """Authorization must consume validated facts before academic database access."""
 from dataclasses import replace
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -21,13 +22,16 @@ def resolver(role="teacher"):
         role_grant=Mock(return_value=RoleGrant(role, frozenset({"marks"}),
                                              frozenset({6}), all_departments=role == "admin")),
         student_scope=Mock(return_value=[StudentScope("target", 6, faculty_row_id=17,
-                                                     course_code="COURSE", section="A")]),
+                                                     course_code="COURSE", section="A", batch="2023",
+                                                     academic_year="2026", year="3", semester="5",
+                                                     valid_from=date(2020,1,1), valid_until=date(2099,1,1))]),
     )
     return VerifiedScopeResolver(source)
 
 
 def decide(scope, role="teacher"):
-    return scope.authorize("account", role, "marks", "target", course_code="COURSE", section="A")
+    return scope.authorize("account", role, "marks", "target", course_code="COURSE", section="A",
+                           batch="2023", academic_year="2026", year="3", semester="5")
 
 
 @pytest.mark.parametrize("role", ["student", "teacher", "hod", "admin"])

@@ -16,6 +16,7 @@ GEMMA_MODEL_NAME = os.getenv(
     "VOXERP_GEMMA_MODEL",
     "mlx-community/gemma-4-e4b-it-4bit",
 )
+GEMMA_MODEL_REVISION = "475b9088d29754a3379866cf5aeb6b41acd313c2"
 GEMMA_MAX_TOKENS = int(os.getenv("VOXERP_GEMMA_MAX_TOKENS", "80"))
 GEMMA_TEMPERATURE = float(os.getenv("VOXERP_GEMMA_TEMPERATURE", "0.0"))
 GEMMA_REPETITION_PENALTY = float(
@@ -111,7 +112,12 @@ class IntentEngine:
         try:
             from mlx_vlm import load
 
-            self.model, self.processor = load(GEMMA_MODEL_NAME)
+            model_path = GEMMA_MODEL_NAME
+            if model_path == "mlx-community/gemma-4-e4b-it-4bit":
+                from huggingface_hub import snapshot_download
+                model_path = snapshot_download(model_path, revision=GEMMA_MODEL_REVISION, local_files_only=True,
+                                               ignore_patterns=["README.md", ".gitattributes"])
+            self.model, self.processor = load(model_path)
             self.gemma_available = True
         except Exception:
             # Fail closed. Never silently fall back to a cloud API.
@@ -179,7 +185,7 @@ class IntentEngine:
                     schema_map=schema_map,
                 )
 
-                intent = self._validate_intent(parsed)
+                intent = self._recover_absence_question(clean_text, self._validate_intent(parsed))
 
                 # Recover explicit entities that Gemma may omit or misclassify.
                 intent = self._recover_gemma_entities(clean_text, intent)
@@ -192,7 +198,7 @@ class IntentEngine:
                 return self._apply_write_safety_guard(clean_text, intent)
 
             except Exception:
-                return self._fallback_intent()
+                return self._recover_absence_question(clean_text, self._fallback_intent())
 
         # ========================================================
         # Compatibility path for explicitly injected Gemini clients
@@ -235,6 +241,17 @@ class IntentEngine:
 
         return self._fallback_intent()
 
+
+    @staticmethod
+    def _recover_absence_question(text, intent):
+        # Bounded historical self-read; extra targets, dates and course clauses
+        # do not match. This never assigns an identity or authorizes access.
+        if re.fullmatch(r"how many (?:periods|hours) was i absent[?.!]?", text.strip(), re.I):
+            return {"action": "read", "table": "attendance", "filters": {
+                "student_id": None, "student_name": None, "subject": None,
+                "date": None, "status": None, "period": None,
+            }}
+        return intent
 
     def _recover_gemma_entities(
         self,

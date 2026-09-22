@@ -145,3 +145,82 @@ department, assignment, or malformed scope evidence denies access.
 Without it, the existing student flow is unchanged and Teacher/HOD/Admin
 requests remain fail-closed. This framework performs no ERP queries and does
 not enable production writes.
+
+
+## 2026-09-22 completion audit (supersedes earlier authorization assumptions)
+
+Read-only inspection of all 298 tables in the isolated loopback clone found:
+
+- `auth_user`, `auth_group`, and `user_accounts_student` contain zero rows.
+  Consequently the dump cannot bind an authenticated institutional account to
+  studentdetails or a faculty record. No production authentication mapping is inferred.
+- All six `user_accounts_globalusers.employee_id` values match faculty
+  `faculty_id` employee identifiers. These are not faculty primary keys.
+- `course_management_assignsubjectfaculty.faculty_id` has a declared foreign
+  key to faculty `id`; 848 assignments exist, 769 marked active. Assignment
+  columns include course, department, batch, section and academic year, but
+  no validity interval or authenticated-account binding.
+- Role IDs occur in module permission and approval tables, but no authoritative
+  semantic role dictionary or current account-role assignment was established.
+  Permission function names and Boolean values do not establish which Django
+  account is entitled to consolidated marks or other academic records.
+- HOD-related columns occur in library requests, program-organization approvals,
+  and stock approvals. They record workflow participants/history, not a current
+  HOD appointment with department and effective dates. No HOD grant is inferred.
+- Student details contain 2,763 rows; 2,751 have `is_active=1`, and five have
+  `is_discontinued=1`. Real academic service reads now require the current row
+  to have `is_active=1 AND is_discontinued=0`; unknown or failed status denies.
+
+### Enabled operation matrix
+
+| Identity | Marks / attendance / timetable | Policy | Real academic writes |
+| --- | --- | --- | --- |
+| Provisioned local student, current active ERP row | Own records only | Supported document questions | Disabled |
+| Teacher/faculty | Denied: identity, role and current operation contract unproven | Existing teacher policy path only | Disabled |
+| HOD | Denied: current appointment/scope unproven | Denied by current application | Disabled |
+| Admin/superuser | Denied: explicit academic capability unproven | Denied by current application | Disabled |
+| Unverified institutional identity | Denied | Denied | Disabled |
+
+`api.identity.AuthenticatedIdentityResolver` is the institutional integration
+point. Only the local demo wrapper explicitly sets `VOXERP_IDENTITY_MODE=local_demo`.
+That convention maps a provisioned numeric Django username to the exact ERP ID;
+it is rejected in production. Fixture identities remain confined to explicit
+non-real development mode. Client fields, names, headers and model output
+cannot establish the current identity. `/confirm` resolves the current Django
+identity again, reauthorizes, checks the real-write guard, and refreshes ERP
+student status before any enabled write. Real writes remain disabled.
+
+The optional `VerifiedScopeResolver` remains a tested integration boundary,
+not an enabled privileged ERP service. Teacher evidence now requires exact
+batch, academic year, year and semester in addition to course and section,
+a current explicit date interval, and exactly one matching assignment. Missing,
+expired, revoked, duplicate or malformed evidence denies. Unsupported actions
+cannot consume a read grant. Static sources are test facts, not proof of roles
+in the supplied dataset. A deployment source must refresh role/identity
+revocation and validity on every call. Do not wire the source into the current
+unscoped academic adapter to enable privileged queries: term-scoped SQL and
+institutional operation semantics must first be established end to end.
+
+Overall attendance uses the existing daily table; explicit period/hour questions
+use hourly rows joined to verified courses and count statuses marked `absent`
+(case-insensitive). Counts cover available recorded history, not an inferred
+current term; unmatched orphan course rows remain excluded. Course codes and
+names are normalized dynamically. Timetable retains the verified department,
+year, semester and section predicates. Its table has no batch/academic-year
+columns; those dimensions cannot be claimed or fabricated.
+
+No real-data answer is assigned to a demo student. SQLite seed values remain
+isolated test fixtures. The old live validator's fixed student-score expectation
+was removed. Default local Gemma loading now resolves the exact cached revision
+`475b9088d29754a3379866cf5aeb6b41acd313c2` (ignoring only README/git metadata),
+with no network download or cloud fallback. Python 3.13.12, MLX 0.32.2 and
+mlx-vlm 0.7.0 remain unchanged.
+
+
+Hourly integrity check found 1,392,751 rows but 1,392,161 distinct
+student/date/period/course-ID tuples. Period counts therefore collapse repeated
+matching date/period/course-code entries; conflicting statuses or incomplete
+keys return an explicit ambiguity response instead of an invented count.
+Observed statuses are Present, Absent and On Duty; on-duty records are not absent.
+The bounded historical absence-question recovery is applied only after local
+Gemma inference is attempted and never assigns identity or broadens authorization.

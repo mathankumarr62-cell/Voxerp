@@ -14,6 +14,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 import db_adapter
 from .services import Identity, VoxERPService
+from .identity import AuthenticatedIdentityResolver
 from .models import ConsumedConfirmation
 
 logger = logging.getLogger(__name__)
@@ -35,18 +36,8 @@ def _json_body(request):
 
 
 def _identity(request) -> Identity:
-    """Derive identity only from Django's authenticated user/session."""
-    user = request.user
-    # ERP student id is intentionally supplied by the authenticated account's username.
-    # A deployment can replace this with a protected profile mapping without changing RBAC.
-    groups = {name.strip().lower() for name in user.groups.values_list("name", flat=True)}
-    if user.is_superuser or "admin" in groups:
-        role = "admin"  # Undefined academic permissions: RBAC rejects this role.
-    elif "hod" in groups:
-        role = "hod"
-    else:
-        role = "teacher" if "teacher" in groups or user.is_staff else "student"
-    return Identity(user_id=user.username, role=role)
+    """Derive identity only from the trusted Django account resolver."""
+    return AuthenticatedIdentityResolver().resolve(request.user)
 
 
 @require_GET
