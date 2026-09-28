@@ -127,7 +127,11 @@ The read validator explicitly reports stubbed inference. Actual Gemma/browser ev
 
 Remote ERP is configured privately at `100.126.94.44:3306`. On this validation host Tailscale was stopped and a five-second TCP probe timed out. An authorized network owner must restore Tailscale/peer/listener availability. No remote authentication or read success is claimed. Never expose 3306 publicly or change credentials to diagnose a failed TCP connection.
 
-For deployment use Django WSGI/ASGI behind HTTPS, `VOXERP_ENV=production`, `DEBUG=False`, an explicit random secret and allowed hosts, trusted account provisioning, real private ERP credentials, and `VOXERP_ALLOW_REAL_WRITES=False`. The local demo wrapper is deliberately development-only. See SCHEMA_MAPPING.md for the missing teacher/HOD/Admin authorization contract.
+For deployment use Django WSGI/ASGI with `VOXERP_ENV=production`, `DEBUG=False`, a random secret of at least 32 characters, exact nonlocal `ALLOWED_HOSTS`, private ERP credentials, and `VOXERP_ALLOW_REAL_WRITES=False`. Production refuses to start with debug enabled, wildcard/loopback hosts, missing secrets, or writes enabled. Standard Django password validators are enabled, and the local account helper runs those validators before creating an account.
+
+Production redirects HTTP to HTTPS, uses secure session/CSRF cookies, and emits one-year HSTS by default. HSTS subdomain coverage and preload are disabled until the institution confirms that every affected hostname is HTTPS-ready. If TLS terminates at a reverse proxy, set `VOXERP_TRUSTED_PROXY_SSL_HEADER=True` only when that proxy removes client-supplied `X-Forwarded-Proto`, writes the trusted value itself, and the application is not reachable around the proxy. Otherwise leave it false. The actual domain, proxy trust boundary, HTTPS certificate, and HSTS subdomain/preload decision remain institution/infrastructure inputs; do not guess them. Run `python manage.py check --deploy` in the final production environment and resolve any infrastructure-dependent warnings before release.
+
+The local demo wrapper is deliberately development-only. See [SCHEMA_MAPPING.md](SCHEMA_MAPPING.md) for the missing teacher/HOD/Admin authorization contract and [INSTITUTIONAL_AUTH_REQUIREMENTS.md](INSTITUTIONAL_AUTH_REQUIREMENTS.md) for the authoritative identity, role, scope, revocation, and approval inputs required before production. Production deployment is not approved by this local configuration work.
 
 ## Troubleshooting
 

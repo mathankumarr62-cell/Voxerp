@@ -1,5 +1,11 @@
 # Final working-model validation — 2026-09-21
 
+> Historical acceptance record. Current-checkout follow-up, including its
+> security corrections and validation limits, is recorded in
+> [COMPLETION_VALIDATION.md](COMPLETION_VALIDATION.md). Do not interpret this
+> dated report as a fresh 2026-09-28 full-suite, live-ERP, Gemma, browser, or
+> physical-device run.
+
 The local student working model is usable with Django, cached local MLX Gemma, and the authorized real MariaDB dump. This is **not a claim that every role, remote deployment, or physical voice requirement is complete**. The external dependencies below remain explicit.
 
 ## Completion matrix
@@ -108,3 +114,7 @@ Tracked-file secret-pattern audit found no matches and no tracked SQL/database/Z
 6. Git publication: `git push -u origin fix/gemma-entity-recovery` reached GitHub outside the sandbox but failed with “Invalid username or token. Password authentication is not supported for Git operations.” Supply an authorized credential through the Git credential manager, then retry that exact non-force command. No remote change is claimed.
 
 See DEPLOYMENT.md for exact fresh-install and daily startup commands, passwords entered locally, query sequence, voice test, troubleshooting, and read-only verification. The final commit hash and actual push result are reported in the execution handoff; use `git log -1` to identify the checked-out release. No force push, bulk staging, backup deletion, or production ERP writes are authorized by this report.
+
+## Institutional handoff
+
+The current acceptance state is not production-ready. Authentication/role/scope mappings, approved policy corpus, production access, hosting/domain/secrets, operational monitoring, security approval, physical voice acceptance and deployment approval remain institution-dependent. See [INSTITUTIONAL_AUTH_REQUIREMENTS.md](INSTITUTIONAL_AUTH_REQUIREMENTS.md) and [INSTITUTIONAL_HANDOFF.md](INSTITUTIONAL_HANDOFF.md) for the exact owner inputs.

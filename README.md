@@ -30,6 +30,8 @@ Copy `.env.example`; it contains placeholders only. Configure `DJANGO_SECRET_KEY
 
 `VOXERP_USE_REAL_DB=True` enables adapter reads from the private MariaDB ERP. `VOXERP_ALLOW_REAL_WRITES` must remain `False` during development and testing. `VOXERP_ENV=production` rejects academic fixture mode. Offline mode combined with real DB access is rejected, never silently redirected to demo data. For isolated local fixtures explicitly keep real DB access disabled. Never expose MariaDB port 3306 publicly.
 
+Production settings fail closed unless they have a random secret, `DEBUG=False`, explicit nonlocal hosts, HTTPS redirection, secure session/CSRF cookies, positive HSTS, and writes disabled. Standard Django password validators are enabled. If TLS terminates at a reverse proxy, only configure `VOXERP_TRUSTED_PROXY_SSL_HEADER=True` after the trusted proxy is confirmed to strip and replace the forwarded-protocol header. HSTS subdomains/preload require infrastructure approval. These checks do not constitute institutional deployment approval; see [INSTITUTIONAL_HANDOFF.md](INSTITUTIONAL_HANDOFF.md).
+
 Gemma is local and configured with `VOXERP_GEMMA_MODEL`, `VOXERP_GEMMA_MAX_TOKENS`, `VOXERP_GEMMA_TEMPERATURE`, and `VOXERP_GEMMA_REPETITION_PENALTY`. If MLX/Gemma is unavailable, intent parsing fails closed; no cloud model or API key is required for the normal path.
 
 ## API
@@ -63,7 +65,7 @@ python3 manage.py test api.tests
 python3 -m pytest -q -p no:cacheprovider
 ```
 
-The Django API and security test suite is the active validation path. New deployments use Django via `manage.py`.
+Ordinary pytest and `manage.py test` disable local Gemma loading and live ERP access. Actual local model inference and live MariaDB acceptance are separate, opt-in checks and must be reported independently. The Django API and security test suite is the active validation path. New deployments use Django via `manage.py`.
 
 ## Troubleshooting
 

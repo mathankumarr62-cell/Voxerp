@@ -19,6 +19,8 @@ def test_demo_environment_overrides_unsafe_inherited_settings(tmp_path, monkeypa
     assert env['VOXERP_ALLOW_REAL_WRITES'] == 'False'
     assert env['VOXERP_OFFLINE_MODE'] == 'False'
     assert env['VOXERP_APP_DB'] == str(tmp_path / 'auth.sqlite3')
+    assert env['VOXERP_ENV'] == 'development'
+    assert env['DEBUG'] == 'True'
 
 
 def test_demo_rejects_nonlocal_configuration(tmp_path, monkeypatch):
@@ -44,7 +46,8 @@ def test_initialization_preserves_existing_state(tmp_path, monkeypatch):
 @pytest.mark.parametrize('suffix', ['.frm', '.ibd'])
 def test_start_rejects_truncated_clone_before_contacting_server(tmp_path, monkeypatch, suffix):
     (tmp_path / 'data/mysql').mkdir(parents=True)
-    damaged = tmp_path / 'data/mysql' / ('table' + suffix)
+    (tmp_path / 'data/ramco_academic_system').mkdir(parents=True)
+    damaged = tmp_path / 'data/ramco_academic_system' / ('table' + suffix)
     damaged.touch()
     socket = tmp_path / 'mysql.sock'
     socket.touch()

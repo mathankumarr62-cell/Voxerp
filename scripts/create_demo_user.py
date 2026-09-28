@@ -19,6 +19,8 @@ def main():
     django.setup()
     from django.conf import settings
     from django.contrib.auth import get_user_model
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError
     import db_adapter
     if settings.DATABASES['default']['ENGINE'] != 'django.db.backends.sqlite3':
         parser.error('This command is restricted to the local Django application database.')
@@ -34,6 +36,10 @@ def main():
     password = getpass.getpass('Local demo password: ')
     if len(password) < 12 or password != getpass.getpass('Repeat password: '):
         parser.error('Passwords must match and contain at least 12 characters.')
+    try:
+        validate_password(password, user=User(username=args.student_id))
+    except ValidationError as exc:
+        parser.error('Password does not meet the configured password policy: ' + '; '.join(exc.messages))
     User.objects.create_user(username=args.student_id, password=password,
                              is_staff=False, is_superuser=False)
     print('Local student account created; credentials are not stored in source files.')

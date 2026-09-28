@@ -108,6 +108,11 @@ class IntentEngine:
         if self.client is not None:
             return
 
+        if os.getenv("VOXERP_DISABLE_GEMMA", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }:
+            return
+
         try:
             from mlx_vlm import load
 

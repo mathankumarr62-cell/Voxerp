@@ -9,6 +9,7 @@ os.environ["VOXERP_ALLOW_REAL_WRITES"] = "False"
 os.environ["VOXERP_INITIALIZE_DATABASE"] = "False"
 os.environ["VOXERP_ENV"] = "development"
 os.environ["VOXERP_OFFLINE_MODE"] = "False"
+os.environ["VOXERP_DISABLE_GEMMA"] = "True"
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 

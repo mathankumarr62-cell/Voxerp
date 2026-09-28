@@ -41,9 +41,7 @@ def start():
         raise RuntimeError('Run init with the authorized dump first.')
     # An interrupted filesystem copy can retain InnoDB data while truncating
     # its table definitions. MariaDB starts, but reads then fail with error 1033.
-    empty_tables = [path for path in (STATE / 'data').rglob('*')
-                    if path.is_file() and path.suffix in {'.frm', '.ibd'}
-                    and path.stat().st_size == 0]
+    empty_tables = _empty_table_files()
     if empty_tables:
         raise RuntimeError(
             f'Local clone has {len(empty_tables)} empty table files. '
@@ -72,6 +70,19 @@ def start():
                 pass
         time.sleep(.2)
     raise RuntimeError('Local MariaDB startup timed out; inspect .local-demo/server.log.')
+
+
+def _empty_table_files():
+    """List empty table files, pruning MariaDB system tables from recursive search."""
+    table_files = []
+    ignored_directories = {'mysql', 'performance_schema', 'sys', 'information_schema'}
+    for root, directories, filenames in os.walk(STATE / 'data'):
+        directories[:] = [name for name in directories if name not in ignored_directories]
+        for filename in filenames:
+            path = Path(root) / filename
+            if path.suffix in {'.frm', '.ibd'} and path.stat().st_size == 0:
+                table_files.append(path)
+    return table_files
 
 
 def initialize(dump):

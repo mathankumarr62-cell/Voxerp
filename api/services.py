@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
 import os
+from threading import Lock
 from typing import Any
 
 import db_adapter
@@ -22,7 +23,21 @@ class Identity:
 
 class VoxERPService:
     def __init__(self, engine: IntentEngine | None = None):
-        self.engine = engine or IntentEngine()
+        self._engine = engine
+        self._engine_lock = Lock()
+
+    @property
+    def engine(self) -> IntentEngine:
+        if self._engine is None:
+            with self._engine_lock:
+                if self._engine is None:
+                    self._engine = IntentEngine()
+        return self._engine
+
+    @engine.setter
+    def engine(self, engine: IntentEngine | None) -> None:
+        with self._engine_lock:
+            self._engine = engine
 
     def query(self, identity: Identity, text: str) -> dict[str, Any]:
         unavailable = _backend_guard()
@@ -43,7 +58,7 @@ class VoxERPService:
         if data_router.route(intent, text) == "rag":
             return {"reply_text": generate_response({"policy_context": retrieve_policy(identity.role, text)}), "status": 200}
         if intent.get("action") == "write":
-            return self._pending(identity, authorization, filters)
+            return self._pending(authorization, filters)
         return self._read(authorization["target_student_id"], intent)
 
     def _read(self, student_id: str, intent: dict[str, Any]) -> dict[str, Any]:
@@ -59,7 +74,7 @@ class VoxERPService:
         else:
             return {"reply_text": "I can't help with that request.", "status": 200}
         return {"reply_text": generate_response(result), "status": 200}
-    def _pending(self, identity: Identity, auth: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
+    def _pending(self, auth: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         period = filters.get("period")
         if isinstance(period, bool) or not isinstance(period, int) or not 1 <= period <= 10:
             return {"reply_text": "Please specify a valid attendance period from 1 to 10.", "status": 200}

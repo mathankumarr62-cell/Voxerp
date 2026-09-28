@@ -101,3 +101,33 @@ Teacher access remains fail-closed. The earlier statement that the schema contai
 The schema contains `user_accounts_globalusers` with string `role_id`/`employee_id`, `faculty_management_faculty_data_permission` with all-faculty/department-faculty flags, and `student_management_studentmanagementpermissions` with function/permission/role fields. Faculty-data permissions do not automatically authorize student marks, attendance or timetable. The historical sprint specifies student self-access and scoped teachers, not an HOD/Admin academic operation matrix.
 
 Required: authoritative role assignment, account-to-employee mapping, department boundary (including shared/elective courses), exact academic read/write permissions, term validity and revocation rules. Until supplied, Admin/HOD groups and Django superusers are mapped to undefined roles and denied by RBAC; they never fall through to student permissions.
+
+### Scope-resolution framework
+
+`intelligence/scope.py` contains the deployment boundary for future privileged
+access. `VerifiedScopeResolver` consumes only explicitly supplied records:
+
+```text
+authenticated account
+  -> FacultyIdentity(account_id, faculty_row_id, employee_id, department_id)
+  -> RoleGrant(role, operations, department_ids/all_departments)
+  -> StudentScope(student_id, department_id, faculty_row_id, course_code, ...)
+```
+
+The resolver does not assign meaning to numeric ERP `role_id` values, infer HOD
+status from designation, or use `faculty_id` where the verified teaching
+relationship requires `faculty_management_general_information.id`. Teacher
+scope requires a matching `faculty_row_id` in a verified student/course scope;
+HOD scope requires an explicit department grant; Admin scope requires an
+explicit all-departments grant. Missing identity, role, operation, department,
+target, or teaching evidence returns a structured denial.
+
+`authorize_request` accepts this resolver only as an injected keyword argument.
+Without it, the existing privileged-role fail-closed behavior remains in place.
+The student authorization path is unchanged. The framework contains no ERP
+queries and does not enable or perform production writes.
+
+This is a reusable authorization primitive, not an institutional role adapter
+or a claim that privileged access is active. See
+[INSTITUTIONAL_AUTH_REQUIREMENTS.md](INSTITUTIONAL_AUTH_REQUIREMENTS.md) for the
+authoritative mapping and approval inputs required before integration.
