@@ -28,6 +28,7 @@ def load_production_settings(overrides=None):
     code = (
         "import json; from django.conf import settings; "
         "print(json.dumps({"
+        "'environment': settings.VOXERP_ENV, "
         "'debug': settings.DEBUG, "
         "'allowed_hosts': settings.ALLOWED_HOSTS, "
         "'ssl_redirect': settings.SECURE_SSL_REDIRECT, "
@@ -59,6 +60,7 @@ class DjangoSecuritySettingsTests(unittest.TestCase):
         result = load_production_settings()
         self.assertEqual(result.returncode, 0, result.stderr)
         settings = json.loads(result.stdout)
+        self.assertEqual(settings["environment"], "production")
         self.assertFalse(settings["debug"])
         self.assertEqual(settings["allowed_hosts"], ["erp.example.edu"])
         self.assertTrue(settings["ssl_redirect"])
@@ -73,6 +75,15 @@ class DjangoSecuritySettingsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         settings = json.loads(result.stdout)
         self.assertEqual(settings["proxy_ssl_header"], ["HTTP_X_FORWARDED_PROTO", "https"])
+
+    def test_missing_environment_defaults_to_production_and_typos_fail(self):
+        result = load_production_settings({"VOXERP_ENV": ""})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["environment"], "production")
+
+        typo = load_production_settings({"VOXERP_ENV": "prod"})
+        self.assertNotEqual(typo.returncode, 0)
+        self.assertIn("VOXERP_ENV must be explicitly set", typo.stderr)
 
     def test_production_rejects_unsafe_configuration(self):
         cases = (

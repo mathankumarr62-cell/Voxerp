@@ -7,7 +7,9 @@ from django.core.exceptions import ImproperlyConfigured
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-VOXERP_ENV = os.getenv("VOXERP_ENV", "development").strip().lower()
+VOXERP_ENV = (os.getenv("VOXERP_ENV", "").strip().lower() or "production")
+if VOXERP_ENV not in {"development", "production"}:
+    raise ImproperlyConfigured("VOXERP_ENV must be explicitly set to development or production.")
 IS_PRODUCTION = VOXERP_ENV == "production"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "unsafe-development-key-change-me")
 if IS_PRODUCTION and (len(SECRET_KEY) < 32 or SECRET_KEY in {"unsafe-development-key-change-me", "replace-with-a-long-random-secret"}):
