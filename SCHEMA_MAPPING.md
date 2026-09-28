@@ -104,28 +104,47 @@ Required: authoritative role assignment, account-to-employee mapping, department
 
 ### Scope-resolution framework
 
-`intelligence/scope.py` contains the deployment boundary for future privileged
-access. `VerifiedScopeResolver` consumes only explicitly supplied records:
+`intelligence/scope.py` defines a deployment boundary, not an ERP adapter.
+`VerifiedScopeResolver` accepts only these verified facts:
 
 ```text
 authenticated account
   -> FacultyIdentity(account_id, faculty_row_id, employee_id, department_id)
   -> RoleGrant(role, operations, department_ids/all_departments)
-  -> StudentScope(student_id, department_id, faculty_row_id, course_code, ...)
+  -> StudentScope(student_id, department_id, faculty_row_id, course_code, section, ...)
 ```
 
-The resolver does not assign meaning to numeric ERP `role_id` values, infer HOD
-status from designation, or use `faculty_id` where the verified teaching
-relationship requires `faculty_management_general_information.id`. Teacher
-scope requires a matching `faculty_row_id` in a verified student/course scope;
-HOD scope requires an explicit department grant; Admin scope requires an
-explicit all-departments grant. Missing identity, role, operation, department,
-target, or teaching evidence returns a structured denial.
+The verified ERP relationships are the observed joins documented above:
 
-`authorize_request` accepts this resolver only as an injected keyword argument.
-Without it, the existing privileged-role fail-closed behavior remains in place.
-The student authorization path is unchanged. The framework contains no ERP
-queries and does not enable or perform production writes.
+```text
+user_accounts_globalusers.employee_id
+  -> faculty_management_general_information.faculty_id
+faculty_management_general_information.id
+  <- course_management_assignsubjectfaculty.faculty_id
+  <- course_management_courseenrollment.faculty_id
+```
+
+Those relationships do **not** supply authentication, semantic role names,
+HOD assignments, operation grants, current-term validity, or account-to-faculty
+bindings. Those are deployment-supplied authorization facts and must be
+provided explicitly. The framework never assigns meanings to numeric
+`role_id` values, infers authorization from designation, or treats System
+Admin as unrestricted academic access.
+
+Teacher access requires a verified faculty identity, explicit operation grant,
+explicit matching department scope, and a matching faculty-row/course/section
+scope. Teacher grants with `all_departments=True` are denied. Teacher requests
+must supply a nonempty section matching the verified assignment; omitted or
+unverified sections never imply access to all sections. HOD access
+requires an explicit HOD grant and department scope. Admin access requires an
+explicit Admin capability and `all_departments=True`; department-only Admin
+grants are denied. Missing identity, role, operation, target, course,
+department, assignment, or malformed scope evidence denies access.
+
+`authorize_request` accepts the resolver only as an optional keyword argument.
+Without it, the existing student flow is unchanged and Teacher/HOD/Admin
+requests remain fail-closed. This framework performs no ERP queries and does
+not enable production writes.
 
 This is a reusable authorization primitive, not an institutional role adapter
 or a claim that privileged access is active. See

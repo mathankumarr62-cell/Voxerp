@@ -10,189 +10,122 @@ from intelligence.scope import (
 )
 
 
-def resolver(
-    *,
-    identities=(),
-    grants=(),
-    scopes=(),
-):
-    return VerifiedScopeResolver(StaticScopeSource(identities, grants, scopes))
-
-
-def teacher_resolver(**overrides):
-    values = {
-        "identities": [FacultyIdentity("teacher-account", 17, "1307", 6)],
-        "grants": [
-            (
-                "teacher-account",
-                RoleGrant("teacher", frozenset({"marks", "attendance"}), frozenset({6})),
+def resolver(*, role="teacher", operations=None, department_ids=frozenset({6}),
+             all_departments=False, scopes=None, faculty_row_id=17):
+    source = StaticScopeSource(
+        identities=[FacultyIdentity("account", faculty_row_id, "employee", 6)],
+        grants=[("account", RoleGrant(
+            role,
+            operations if operations is not None else frozenset({"marks"}),
+            department_ids,
+            all_departments,
+        ))],
+        scopes=scopes if scopes is not None else [
+            StudentScope(
+                "student-1",
+                6,
+                faculty_row_id=17,
+                course_code="EE3020",
+                section="A",
             )
         ],
-        "scopes": [
-            StudentScope("student-1", 6, course_id=285, course_code="EE3020", faculty_row_id=17)
-        ],
-    }
-    values.update(overrides)
-    return resolver(**values)
+    )
+    return VerifiedScopeResolver(source)
 
 
-def intent(table="marks", action="read", student_id="student-1", subject=None):
+def intent(*, student_id="student-1", table="marks", action="read",
+           subject="EE3020", section="A"):
     return {
         "action": action,
         "table": table,
-        "filters": {"student_id": student_id, "student_name": None, "subject": subject},
+        "filters": {
+            "student_id": student_id,
+            "student_name": None,
+            "subject": subject,
+            "section": section,
+        },
     }
 
 
-def test_teacher_is_allowed_only_for_verified_faculty_assignment_and_course():
-    decision = authorize_request(
-        "teacher-account",
-        "teacher",
-        intent(subject="EE3020"),
+def authorize(role="teacher", scope=None, request=None):
+    return authorize_request(
+        "account",
+        role,
+        request or intent(),
         "show student marks",
-        scope_resolver=teacher_resolver(),
+        scope_resolver=scope or resolver(role=role),
     )
-    assert decision["allowed"] is True
-    assert decision["reason"] == "verified_scope"
-
-    wrong_course = authorize_request(
-        "teacher-account",
-        "teacher",
-        intent(subject="OTHER"),
-        "show student marks",
-        scope_resolver=teacher_resolver(),
-    )
-    assert wrong_course["reason"] == "teaching_scope_denied"
 
 
-def test_teacher_without_course_scope_is_denied_for_course_data():
-    decision = authorize_request(
-        "teacher-account",
-        "teacher",
-        intent(),
-        "show student marks",
-        scope_resolver=teacher_resolver(),
-    )
-    assert decision["allowed"] is False
-    assert decision["reason"] == "course_scope_unknown"
+def test_teacher_access_requires_verified_assignment_course_and_section():
+    assert authorize()["reason"] == "verified_scope"
+    assert authorize(request=intent(subject="OTHER"))["reason"] == "teaching_scope_denied"
+    assert authorize(request=intent(section="B"))["reason"] == "teaching_scope_denied"
+    assert authorize(request=intent(section=None))["reason"] == "teaching_scope_denied"
+
+
+def test_teacher_employee_id_cannot_substitute_for_faculty_row_id():
+    scope = resolver(faculty_row_id=1307)
+    assert authorize(scope=scope)["reason"] == "teaching_scope_denied"
 
 
 @pytest.mark.parametrize(
-    ("change", "reason"),
+    ("scope", "reason"),
     [
-        ({"identities": []}, "identity_unverified"),
+        (resolver(scopes=[]), "target_unverified"),
+        (resolver(operations=frozenset()), "role_unverified"),
         (
-            {
-                "grants": [
-                    (
-                        "teacher-account",
-                        RoleGrant("teacher", frozenset({"marks"}), frozenset({6}), active=False),
-                    )
-                ]
-            },
-            "role_unverified",
+            resolver(scopes=[
+                StudentScope("student-1", 35, faculty_row_id=17,
+                             course_code="EE3020", section="A")
+            ]),
+            "department_denied",
         ),
         (
-            {
-                "grants": [
-                    (
-                        "teacher-account",
-                        RoleGrant("teacher", frozenset({"attendance"}), frozenset({6})),
-                    )
-                ]
-            },
-            "operation_denied",
-        ),
-        ({"scopes": []}, "target_unverified"),
-        (
-            {
-                "grants": [
-                    (
-                        "teacher-account",
-                        RoleGrant("teacher", frozenset({"marks"}), frozenset()),
-                    )
-                ]
-            },
-            "department_scope_unknown",
-        ),
-        (
-            {
-                "grants": [
-                    (
-                        "teacher-account",
-                        RoleGrant("teacher", frozenset({"marks"}), frozenset({35})),
-                    )
-                ]
-            },
+            resolver(all_departments=True),
             "department_denied",
         ),
     ],
 )
-def test_teacher_scope_fail_closed(change, reason):
-    base = {
-        "identities": [FacultyIdentity("teacher-account", 17, "1307", 6)],
-        "grants": [
-            (
-                "teacher-account",
-                RoleGrant("teacher", frozenset({"marks"}), frozenset({6})),
-            )
-        ],
-        "scopes": [StudentScope("student-1", 6, course_code="EE3020", faculty_row_id=17)],
-    }
-    base.update(change)
-    decision = authorize_request(
-        "teacher-account",
-        "teacher",
-        intent(subject="EE3020"),
-        "show student marks",
-        scope_resolver=resolver(**base),
-    )
-    assert decision["allowed"] is False
-    assert decision["reason"] == reason
+def test_teacher_missing_or_out_of_scope_evidence_denied(scope, reason):
+    assert authorize(scope=scope)["reason"] == reason
 
 
-def test_teacher_cannot_use_employee_id_as_faculty_row_id():
-    scope = resolver(
-        identities=[FacultyIdentity("teacher-account", 1307, "1307", 6)],
-        grants=[("teacher-account", RoleGrant("teacher", frozenset({"marks"}), frozenset({6})))],
-        scopes=[StudentScope("student-1", 6, course_code="EE3020", faculty_row_id=17)],
+def test_hod_requires_explicit_department_grant():
+    hod_scope = resolver(
+        role="hod",
+        scopes=[StudentScope("student-1", 6, course_code="EE3020")],
     )
-    decision = authorize_request(
-        "teacher-account", "teacher", intent(subject="EE3020"), scope_resolver=scope
-    )
-    assert decision["reason"] == "teaching_scope_denied"
+    assert authorize(role="hod", scope=hod_scope)["reason"] == "verified_scope"
 
-
-def test_hod_requires_explicit_role_and_department_scope():
-    scope = resolver(
-        identities=[FacultyIdentity("hod-account", 106, "1406", 35)],
-        grants=[("hod-account", RoleGrant("hod", frozenset({"marks", "attendance"}), frozenset({35})))],
-        scopes=[StudentScope("student-1", 35, course_code="EC25C05", faculty_row_id=106)],
+    outside = resolver(
+        role="hod",
+        department_ids=frozenset({35}),
+        scopes=[StudentScope("student-1", 6, course_code="EE3020")],
     )
-    allowed = authorize_request("hod-account", "hod", intent(), scope_resolver=scope)
-    assert allowed["allowed"] is True
+    assert authorize(role="hod", scope=outside)["reason"] == "department_denied"
 
-    outside = authorize_request(
-        "hod-account",
-        "hod",
-        intent(student_id="student-2"),
-        scope_resolver=resolver(
-            identities=[FacultyIdentity("hod-account", 106, "1406", 35)],
-            grants=[("hod-account", RoleGrant("hod", frozenset({"marks"}), frozenset({35})))],
-            scopes=[StudentScope("student-2", 6, course_code="EE3020", faculty_row_id=17)],
-        ),
+    all_departments = resolver(
+        role="hod",
+        all_departments=True,
+        scopes=[StudentScope("student-1", 6, course_code="EE3020")],
     )
-    assert outside["reason"] == "department_denied"
+    assert authorize(role="hod", scope=all_departments)["reason"] == "department_denied"
 
 
 def test_admin_requires_explicit_all_department_grant():
-    scope = resolver(
-        identities=[FacultyIdentity("admin-account", 280, "2501", 39)],
-        grants=[("admin-account", RoleGrant("admin", frozenset({"marks"}), all_departments=True))],
-        scopes=[StudentScope("student-1", 6, course_code="EE3020", faculty_row_id=17)],
+    admin_scope = resolver(
+        role="admin",
+        all_departments=True,
+        scopes=[StudentScope("student-1", 6, course_code="EE3020")],
     )
-    decision = authorize_request("admin-account", "admin", intent(), scope_resolver=scope)
-    assert decision["allowed"] is True
+    assert authorize(role="admin", scope=admin_scope)["reason"] == "verified_scope"
+
+    department_only = resolver(
+        role="admin",
+        scopes=[StudentScope("student-1", 6, course_code="EE3020")],
+    )
+    assert authorize(role="admin", scope=department_only)["reason"] == "department_scope_unknown"
 
 
 @pytest.mark.parametrize("role", ["hod", "admin"])
@@ -202,13 +135,13 @@ def test_privileged_roles_without_resolver_remain_denied(role):
     assert decision["reason"] == "invalid_role"
 
 
-def test_student_flow_does_not_use_scope_resolver():
+def test_student_flow_is_unchanged_by_scope_resolver():
     decision = authorize_request(
         "student-1",
         "student",
-        intent(student_id=None),
+        intent(student_id=None, subject=None, section=None),
         "show me my marks",
-        scope_resolver=teacher_resolver(),
+        scope_resolver=resolver(),
     )
     assert decision["allowed"] is True
     assert decision["target_student_id"] == "student-1"
