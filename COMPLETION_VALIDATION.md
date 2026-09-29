@@ -1,9 +1,9 @@
 # VoxERP current validation
 
-**2026-09-28 follow-up against `fix/gemma-entity-recovery`, base commit
-`c83cf94a061ff14af1b71f3309d3a5f7cac0933e`, plus the uncommitted changes described below.**
-This section supersedes earlier same-day results. No release is approved while
-physical voice acceptance remains pending.
+**2026-09-29 final acceptance update against `fix/gemma-entity-recovery`, HEAD `696c57e`.**
+This section supersedes earlier validation snapshots. The application changes described
+below are committed; the technical working model has completed physical voice acceptance.
+Institutional production approval remains pending.
 
 ## Current evidence
 
@@ -19,10 +19,10 @@ physical voice acceptance remains pending.
 | Actual pinned Gemma | **9/9 passed**, actual MLX inference with revision `475b9088d29754a3379866cf5aeb6b41acd313c2`, offline flags enabled, no injected cloud client. Cases: marks, attendance, timetable, course name, course code, separated spoken code, conversational academic request, policy and explicit other-student target. |
 | Voice software | Generic normalization and service-to-response/TTS preparation regressions pass; existing controlled browser speech lifecycle test passes. These are not physical audio evidence. |
 | Browser | Actual local login page rendered, screenshot inspected, browser error command reported no errors. Browser STT/TTS APIs available in secure context. Physical audio remains unverified. |
-| Physical voice | **BLOCKED for cases 1–8**: available tools cannot provide physical microphone utterances or confirm audible speaker output. Browser exposes STT/TTS APIs in a secure context; that is not physical evidence. No physical PASS claimed. |
+| Physical voice | **8/8 PASS**: all eight supervised browser/physical voice acceptance cases completed successfully, including real ERP read responses, policy/RAG isolation, cross-student denial, attendance clarification and confirmation safety. Real ERP writes remained disabled. |
 | Production safety | Synthetic production `check --deploy` passed with only W005/W021 (HSTS subdomains/preload), awaiting approved domain coverage. Real writes remain disabled. Actual institutional deployment is not validated. |
 | Repository hygiene | No tracked `.env`, SQL dump, database, `.local-demo` data or archive. Credential-pattern review found only test passwords. Ignored private artifacts preserved. `git diff --check` passed. |
-| Release | No commit, merge, final tag or push. Protected baseline and RC tag objects unchanged. |
+| Release | Validation commit `696c57e` is committed locally. No merge, final release tag or push performed. Protected baseline and RC tag targets remain unchanged. |
 
 ## Changes and bounded security review
 
@@ -100,7 +100,7 @@ The following record is retained for provenance only and is superseded above.
 | Migration consistency | `manage.py makemigrations --check --dry-run`: no changes detected after security integration |
 | Live MariaDB | Not run. The local wrapper could not bind loopback port 3307 (`Operation not permitted`); only the process launched by this attempt was stopped. No remote ERP connection was attempted. |
 | Local Gemma inference | Not run in this pass; the expected pinned snapshot is not present at the standard local Hugging Face cache path. Historical cached-model evidence is in [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md). |
-| RAG / browser / physical voice | Automated suite passed, including browser voice lifecycle coverage. No live browser session or physical microphone/speaker acceptance was performed. Physical voice acceptance is **PENDING MANUAL TEST**. |
+| RAG / browser / physical voice | Historical snapshot: automated suite passed, including browser voice lifecycle coverage. At that earlier checkpoint, no live browser session or physical microphone/speaker acceptance had been performed. This was subsequently superseded by the current **8/8 PASS** physical voice acceptance recorded above. |
 
 ## Security corrections in this pass
 
