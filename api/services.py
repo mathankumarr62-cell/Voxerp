@@ -12,6 +12,7 @@ from intelligence.intent_engine import INTENT_SCHEMA, IntentEngine
 from intelligence.rbac import authorize_request, data_router
 from intelligence.response_generator import generate_response
 from rag.retriever import retrieve_policy
+from voice.stt import normalize_course_codes
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class VoxERPService:
             return unavailable
         if not isinstance(text, str):
             return {"reply_text": "Text must be a string.", "status": 400}
-        text = (text or "").strip()
+        text = normalize_course_codes((text or "").strip())
         if not text:
             return {"reply_text": "I didn't catch that, try again.", "status": 400}
         intent = self.engine.parse(text, identity.role, _schema_map())
@@ -63,9 +64,7 @@ class VoxERPService:
     def _read(self, student_id: str, intent: dict[str, Any]) -> dict[str, Any]:
         filters, table = intent["filters"], intent["table"]
         if table == "attendance":
-            if not filters.get("subject"):
-                return {"reply_text": "Which subject would you like attendance for?", "status": 200}
-            result = db_adapter.get_attendance(student_id, filters["subject"])
+            result = db_adapter.get_attendance(student_id, filters.get("subject"))
         elif table == "marks":
             result = db_adapter.get_marks(student_id, filters.get("subject"))
         elif table == "timetable":
@@ -110,6 +109,7 @@ def _schema_map() -> dict[str, Any]:
 def _backend_guard():
     real = db_adapter._real_db_enabled()
     offline = os.getenv("VOXERP_OFFLINE_MODE", "False").lower() in {"1", "true", "yes", "on"}
-    if (os.getenv("VOXERP_ENV", "development").lower() == "production" and not real) or (real and offline):
+    environment = os.getenv("VOXERP_ENV", "").strip().lower() or "production"
+    if environment not in {"development", "production"} or (environment == "production" and not real) or (real and offline):
         return {"reply_text": "Academic database configuration is unavailable.", "status": 503}
     return None

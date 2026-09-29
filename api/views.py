@@ -22,15 +22,19 @@ PENDING_SALT = "voxerp.attendance.confirmation"
 PENDING_MAX_AGE_SECONDS = 300
 
 
+class InvalidRequest(ValueError):
+    """Only these controlled messages may be returned to clients."""
+
+
 def _json_body(request):
     if len(request.body) > 16_384:
-        raise ValueError("Request is too large")
+        raise InvalidRequest("Request is too large")
     try:
         payload = json.loads(request.body or b"{}")
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError("Invalid JSON request body") from exc
+        raise InvalidRequest("Invalid JSON request body") from exc
     if not isinstance(payload, dict):
-        raise ValueError("JSON object required")
+        raise InvalidRequest("JSON object required")
     return payload
 
 
@@ -66,7 +70,7 @@ def query(request):
         if response.get("requires_confirmation"):
             response["pending"] = signing.dumps({"user_id": request.user.pk, "nonce": secrets.token_urlsafe(24), "pending": response["pending"]}, salt=PENDING_SALT, compress=True)
         return JsonResponse(response, status=status)
-    except ValueError as exc:
+    except InvalidRequest as exc:
         return JsonResponse({"reply_text": str(exc)}, status=400)
     except Exception:
         logger.exception("VoxERP query failed for authenticated user id=%s", request.user.pk)
@@ -97,7 +101,7 @@ def confirm(request):
         return JsonResponse({k: v for k, v in response.items() if k != "status"}, status=response["status"])
     except signing.BadSignature:
         return JsonResponse({"reply_text": "That confirmation has expired. Please start again."}, status=400)
-    except ValueError as exc:
+    except InvalidRequest as exc:
         return JsonResponse({"reply_text": str(exc)}, status=400)
     except Exception:
         logger.exception("VoxERP confirmation failed for authenticated user id=%s", request.user.pk)

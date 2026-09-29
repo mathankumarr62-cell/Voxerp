@@ -96,14 +96,14 @@ A successful read cannot guarantee a record exists. Do not advertise student 917
 2. Allow microphone access in macOS System Settings → Privacy & Security → Microphone and in Chrome's site settings. Use localhost or HTTPS.
 3. Log in as `917`, click **Use microphone**, and speak **Show my IT25201 attendance**.
 4. Verify the actual recognized words appear in the text box, the attendance response appears, and the response is audibly spoken.
-5. Repeat `Show my timetable` as account `44`. Do not voice-test an ERP write.
+5. Repeat `Show my timetable` as account `44`. Attendance-write acceptance may inspect clarification and confirmation only; never confirm a real ERP write.
 6. Record browser/version, permission status, transcript, returned answer, and audible playback. A synthetic speech event verifies wiring only; it does not pass this test.
 
 Speech recognition depends on browser support, permission, microphone hardware and potentially the browser vendor's recognition service/network. Text remains usable when speech fails. TTS event delivery does not independently prove sound reached the speaker. See the release report for the actual automated environment result.
 
 ## Validation
 
-Normal pytest blocks all network/MariaDB attempts and skips the 26 explicit live cases:
+Pytest uses explicit isolated development settings before Django initialization; production defaults remain fail-closed. Normal pytest blocks all network/MariaDB attempts and skips the 26 explicit live cases:
 
 ```bash
 python -m pytest -q

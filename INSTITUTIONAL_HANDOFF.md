@@ -5,10 +5,10 @@
 ## Operational status
 
 - **Production: NOT READY.**
-- **Demo: SUPERVISED READ-ONLY READY**, subject to local demo startup and the authorized clone being available. The present execution environment could not bind MariaDB to loopback port 3307, so live reads were not revalidated in this handoff run.
+- **Demo: SUPERVISED READ-ONLY READY**, subject to local demo startup and the authorized clone being available. The 2026-09-28 follow-up passed all 26 live tests on the loopback-only clone using authorized host execution; physical voice acceptance is still pending.
 - **Writes: DISABLED.** Keep `VOXERP_ALLOW_REAL_WRITES=False`; the local ERP demo login is SELECT-only. Do not enable writes for production.
 - **Physical voice acceptance: PENDING MANUAL TEST.**
-- Django, local Gemma and the isolated MariaDB clone have historical validation records in [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md). Those records are not evidence that the present checkout, model cache, physical devices, or institutional network were retested.
+- Current Django, actual pinned Gemma and live MariaDB evidence is recorded in [COMPLETION_VALIDATION.md](COMPLETION_VALIDATION.md). Older evidence remains in [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md). Physical audio and the institutional network are not covered by automated local validation.
 
 ## Required college/ERP/infrastructure deliverables
 

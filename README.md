@@ -22,7 +22,7 @@ python scripts/local_demo.py run -- python manage.py runserver 127.0.0.1:8000 --
 
 Open `http://127.0.0.1:8000/` and sign in with the locally provisioned account. Username `917` maps only to ERP student ID `917`. Ask “Show my IT25201 marks”, “Show my IT25201 attendance”, or “What is the attendance policy?”. Student `917` has no matching current timetable in the supplied dump; student `44` has a department-scoped timetable and must log in separately to view it. Missing data is never filled with another department's schedule.
 
-Teacher academic access remains blocked pending a verified teacher identity/scope contract. HOD/Admin groups and superusers are explicitly denied academic permissions. See [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) for current evidence and blockers.
+Teacher academic access remains blocked pending a verified teacher identity/scope contract. HOD/Admin groups and superusers are explicitly denied academic permissions. See [COMPLETION_VALIDATION.md](COMPLETION_VALIDATION.md) for current evidence and blockers; [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) retains historical evidence.
 
 ## Configuration and ERP safety
 
@@ -60,7 +60,7 @@ Write requests first return a signed confirmation token. Tokens expire after fiv
 ## Testing
 
 ```bash
-python3 manage.py check
+VOXERP_ENV=development VOXERP_USE_REAL_DB=False VOXERP_ALLOW_REAL_WRITES=False python3 manage.py check
 python3 manage.py test api.tests
 python3 -m pytest -q -p no:cacheprovider
 ```

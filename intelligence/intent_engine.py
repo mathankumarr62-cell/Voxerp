@@ -6,6 +6,7 @@ import re
 from typing import Any, Dict
 
 from google import genai
+from voice.stt import normalize_course_codes
 
 
 MODEL_NAME = "gemini-3.6-flash"
@@ -140,7 +141,7 @@ class IntentEngine:
         if normalized_role not in {"student", "teacher"}:
             return self._fallback_intent()
 
-        clean_text = text.strip()
+        clean_text = normalize_course_codes(text.strip())
 
         # Deterministic handling for unmistakable attendance-write commands.
         # These commands are explicit enough that Gemini classification is
